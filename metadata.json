@@ -1,0 +1,7 @@
+{
+  "name": "Sonic Lens",
+  "description": "AI-powered meeting recorder and transcriber with speaker diarization.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

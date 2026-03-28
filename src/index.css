@@ -1,0 +1,59 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;700;800&family=Inter:wght@400;500;600&display=swap');
+
+@theme {
+  --font-headline: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  --color-primary: #3525cd;
+  --color-secondary: #712ae2;
+  --color-tertiary: #00505f;
+  --color-surface: #faf8ff;
+  --color-on-surface: #131b2e;
+  --color-on-surface-variant: #464555;
+  --color-surface-container: #eaedff;
+  --color-surface-container-low: #f2f3ff;
+  --color-surface-container-high: #e2e7ff;
+  --color-surface-container-highest: #dae2fd;
+  --color-surface-container-lowest: #ffffff;
+  --color-primary-fixed: #e2dfff;
+  --color-primary-fixed-dim: #c3c0ff;
+  --color-secondary-fixed: #eaddff;
+  --color-outline-variant: #c7c4d8;
+  --color-error: #ba1a1a;
+}
+
+@layer base {
+  body {
+    @apply bg-surface font-body text-on-surface;
+  }
+}
+
+@layer components {
+  .glass-hud {
+    background: rgba(218, 226, 253, 0.6);
+    backdrop-filter: blur(20px);
+  }
+
+  .sonic-gradient {
+    background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
+  }
+}
+
+.waveform-bar {
+  animation: pulse-height 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse-height {
+  0%, 100% { height: 8px; }
+  50% { height: 32px; }
+}
+
+.fade-in-text {
+  animation: text-fade 0.5s ease-out forwards;
+}
+
+@keyframes text-fade {
+  from { opacity: 0; transform: translateY(4px); filter: blur(2px); }
+  to { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
