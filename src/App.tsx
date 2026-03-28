@@ -57,8 +57,9 @@ const Dashboard = () => {
   const [isPaused, setIsPaused] = useState(false);
   const [duration, setDuration] = useState(0);
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
   const [processingCount, setProcessingCount] = useState(0);
+  const [isFinalizing, setIsFinalizing] = useState(false);
+  const isProcessing = processingCount > 0 || isFinalizing;
   const [currentTranscript, setCurrentTranscript] = useState<string>("");
   const [fullTranscript, setFullTranscript] = useState<TranscriptItem[]>([]);
   const [lastAudioUrl, setLastAudioUrl] = useState<string | null>(null);
@@ -69,6 +70,7 @@ const Dashboard = () => {
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
   const [namingError, setNamingError] = useState("");
   const [newRecordingTitle, setNewRecordingTitle] = useState("");
+  const [hasAutoShownModal, setHasAutoShownModal] = useState(false);
   const allBlobsRef = useRef<Blob[]>([]);
   const isWaitingForFinalBlobRef = useRef(false);
   const fullSummaryRef = useRef<string>("");
@@ -77,11 +79,12 @@ const Dashboard = () => {
 
   // Effect to handle state when processing is done
   useEffect(() => {
-    if (shouldSave && !isRecording && processingCount === 0 && (finalAudioBlob || allBlobsRef.current.length > 0)) {
-      // We no longer auto-save here. The naming modal handles it.
-      // But we can use this to signal that the recording is ready to be saved.
+    if (shouldSave && !isRecording && processingCount === 0 && !isNamingModalOpen && !hasAutoShownModal && lastAudioUrl) {
+      setNewRecordingTitle(`Meeting ${format(new Date(), 'yyyy-MM-dd HH:mm')}`);
+      setIsNamingModalOpen(true);
+      setHasAutoShownModal(true);
     }
-  }, [shouldSave, isRecording, processingCount, finalAudioBlob, fullTranscript, duration]);
+  }, [shouldSave, isRecording, processingCount, isNamingModalOpen, hasAutoShownModal, lastAudioUrl]);
 
   const resetRecording = () => {
     setCurrentTranscript("");
@@ -92,6 +95,7 @@ const Dashboard = () => {
     setSaveStatus('idle');
     setNewRecordingTitle("");
     setNamingError("");
+    setHasAutoShownModal(false);
     allBlobsRef.current = [];
     fullSummaryRef.current = "";
     setIsResetModalOpen(false);
@@ -234,6 +238,7 @@ const Dashboard = () => {
       setFullTranscript([]);
       setProcessingCount(0);
       setSaveStatus('idle');
+      setHasAutoShownModal(false);
 
       setupRecorder(recorder);
 
@@ -252,7 +257,7 @@ const Dashboard = () => {
 
   const finalizeRecording = async () => {
     if (allBlobsRef.current.length > 0) {
-      setIsProcessing(true);
+      setIsFinalizing(true);
       try {
         const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
         const audioBuffers: AudioBuffer[] = [];
@@ -295,7 +300,7 @@ const Dashboard = () => {
       } catch (err) {
         console.error("Error finalizing recording:", err);
       } finally {
-        setIsProcessing(false);
+        setIsFinalizing(false);
       }
     }
     isWaitingForFinalBlobRef.current = false;
@@ -381,7 +386,6 @@ const Dashboard = () => {
 
   const handleSegmentTranscription = async (blob: Blob) => {
     setProcessingCount(prev => prev + 1);
-    setIsProcessing(true);
     try {
       const reader = new FileReader();
       reader.readAsDataURL(blob);
@@ -420,7 +424,7 @@ const Dashboard = () => {
       return;
     }
 
-    setIsProcessing(true);
+    setIsFinalizing(true);
     setSaveStatus('idle');
     allBlobsRef.current = [file];
     setFinalAudioBlob(file);
@@ -439,30 +443,26 @@ const Dashboard = () => {
           
           setFullTranscript(result.transcript);
           fullSummaryRef.current = result.summary;
-          setIsProcessing(false);
+          setIsFinalizing(false);
           setCurrentTranscript("");
           
           // Show naming modal for imported files too
           setNewRecordingTitle(file.name.split('.')[0] || `Imported ${format(new Date(), 'yyyy-MM-dd HH:mm')}`);
           setIsNamingModalOpen(true);
+          setHasAutoShownModal(true);
           setShouldSave(true);
           console.log("Import file thành công. Đang chờ người dùng đặt tên để lưu.");
         } catch (err: any) {
           console.error("Transcription error:", err);
           setCurrentTranscript(`[Lỗi AI: ${err.message}]`);
-          setIsProcessing(false);
+          setIsFinalizing(false);
         }
       };
     } catch (err) {
       console.error("Error processing file:", err);
-      setIsProcessing(false);
+      setIsFinalizing(false);
     }
   };
-
-  // Sync isProcessing with processingCount
-  useEffect(() => {
-    setIsProcessing(processingCount > 0);
-  }, [processingCount]);
 
   const pauseRecording = () => {
     if (mediaRecorder && isRecording && !isPaused) {
@@ -509,10 +509,6 @@ const Dashboard = () => {
         // Nếu recorder đã dừng (đang ở trạng thái pause), ta có thể finalize luôn
         finalizeRecording();
       }
-
-      // Show naming modal
-      setNewRecordingTitle(`Meeting ${format(new Date(), 'yyyy-MM-dd HH:mm')}`);
-      setIsNamingModalOpen(true);
     }
   };
 
@@ -677,14 +673,16 @@ const Dashboard = () => {
                     <>
                       <button 
                         onClick={() => setIsNamingModalOpen(true)}
-                        className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-xl text-xs font-bold shadow-lg shadow-primary/20 hover:scale-105 transition-all active:scale-95"
+                        disabled={isProcessing}
+                        className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-xl text-xs font-bold shadow-lg shadow-primary/20 hover:scale-105 transition-all active:scale-95 disabled:opacity-50 disabled:hover:scale-100"
                       >
                         <Save className="w-3.5 h-3.5" />
                         Lưu bản ghi
                       </button>
                       <button 
                         onClick={() => setIsResetModalOpen(true)}
-                        className="flex items-center gap-2 px-4 py-2 bg-surface-container-high text-error rounded-xl text-xs font-bold hover:bg-error/10 transition-all active:scale-95"
+                        disabled={isProcessing}
+                        className="flex items-center gap-2 px-4 py-2 bg-surface-container-high text-error rounded-xl text-xs font-bold hover:bg-error/10 transition-all active:scale-95 disabled:opacity-50"
                       >
                         <RotateCcw className="w-3.5 h-3.5" />
                         Hủy
@@ -694,7 +692,8 @@ const Dashboard = () => {
                   {fullTranscript.length > 0 && (
                     <button 
                       onClick={() => exportToWord(newRecordingTitle || "Recording", fullTranscript)}
-                      className="flex items-center gap-2 px-4 py-2 bg-surface-container-high text-primary rounded-xl text-xs font-bold hover:bg-primary/10 transition-all active:scale-95"
+                      disabled={isProcessing}
+                      className="flex items-center gap-2 px-4 py-2 bg-surface-container-high text-primary rounded-xl text-xs font-bold hover:bg-primary/10 transition-all active:scale-95 disabled:opacity-50"
                     >
                       <FileText className="w-3.5 h-3.5" />
                       Xuất Word
@@ -724,9 +723,9 @@ const Dashboard = () => {
               key={i} 
               className={cn(
                 "w-1.5 rounded-full transition-all duration-300",
-                isRecording ? "bg-primary waveform-bar" : "bg-surface-container-highest h-2"
+                (isRecording || isProcessing) ? "bg-primary waveform-bar" : "bg-surface-container-highest h-2"
               )}
-              style={{ animationDelay: `${i * 0.1}s`, height: isRecording ? undefined : `${[2,4,3,6,4,2,5,3][i] * 4}px` }}
+              style={{ animationDelay: `${i * 0.1}s`, height: (isRecording || isProcessing) ? undefined : `${[2,4,3,6,4,2,5,3][i] * 4}px` }}
             ></div>
           ))}
         </div>
@@ -788,7 +787,7 @@ const Dashboard = () => {
               <div className="text-xl font-body text-on-surface whitespace-pre-wrap italic opacity-70">
                 {currentTranscript}
               </div>
-            ) : isRecording ? (
+            ) : (isRecording || isProcessing) ? (
               <div className="flex flex-col gap-4 opacity-30">
                 <div className="h-4 bg-surface-container rounded w-3/4"></div>
                 <div className="h-4 bg-surface-container rounded w-1/2"></div>
@@ -964,6 +963,8 @@ const AdminDashboard = () => {
   const [itemToDelete, setItemToDelete] = useState<Recording | null>(null);
   const [isActionLoading, setIsActionLoading] = useState(false);
   const [renameError, setRenameError] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   useEffect(() => {
     fetchRecordings();
@@ -998,35 +999,43 @@ const AdminDashboard = () => {
     }
   };
 
-  const deleteRecording = async () => {
-    if (!itemToDelete) return;
+  const deleteMultipleRecordings = async () => {
+    if (selectedIds.length === 0 && !itemToDelete) return;
+    
+    const idsToDelete = itemToDelete ? [itemToDelete.id] : selectedIds;
+    const itemsToDelete = recordings.filter(r => idsToDelete.includes(r.id));
     
     setIsActionLoading(true);
     try {
-      // Extract filename from URL
-      const urlParts = itemToDelete.audio_url.split('/');
-      const fileName = urlParts[urlParts.length - 1];
+      // Extract filenames from URLs
+      const fileNames = itemsToDelete.map(item => {
+        const urlParts = item.audio_url.split('/');
+        return urlParts[urlParts.length - 1];
+      });
 
       // Delete from storage
       const { error: storageError } = await supabase.storage
         .from('recordings')
-        .remove([fileName]);
+        .remove(fileNames);
 
       if (storageError) {
-        console.warn("Lỗi khi xóa file từ Storage (có thể file không tồn tại):", storageError.message);
+        console.warn("Lỗi khi xóa file từ Storage:", storageError.message);
       }
 
       // Delete from DB
       const { error: dbError } = await supabase
         .from('recordings')
         .delete()
-        .eq('id', itemToDelete.id);
+        .in('id', idsToDelete);
       
       if (!dbError) {
-        setRecordings(prev => prev.filter(r => r.id !== itemToDelete.id));
-        if (selectedRecording?.id === itemToDelete.id) setSelectedRecording(null);
+        setRecordings(prev => prev.filter(r => !idsToDelete.includes(r.id)));
+        if (selectedRecording && idsToDelete.includes(selectedRecording.id)) {
+          setSelectedRecording(null);
+        }
         setIsDeleteModalOpen(false);
         setItemToDelete(null);
+        setSelectedIds([]);
       } else {
         alert("Lỗi khi xóa bản ghi từ Database: " + dbError.message);
       }
@@ -1036,6 +1045,8 @@ const AdminDashboard = () => {
       setIsActionLoading(false);
     }
   };
+
+  const deleteRecording = deleteMultipleRecordings;
 
   const renameRecording = async () => {
     if (!itemToEdit || !editTitleValue.trim()) return;
@@ -1170,45 +1181,113 @@ const AdminDashboard = () => {
         <div className="max-w-6xl mx-auto">
           {activeTab === 'recordings' ? (
             <>
-              <header className="mb-10">
-                <h1 className="text-4xl font-black font-headline tracking-tight text-on-surface mb-2">Quản lý bản ghi</h1>
-                <p className="text-on-surface-variant font-body">Xem lại và quản lý các cuộc hội thoại đã được AI chuyển đổi.</p>
+              <header className="mb-10 flex flex-col md:flex-row md:items-end justify-between gap-6">
+                <div>
+                  <h1 className="text-4xl font-black font-headline tracking-tight text-on-surface mb-2">Quản lý bản ghi</h1>
+                  <p className="text-on-surface-variant font-body">Xem lại và quản lý các cuộc hội thoại đã được AI chuyển đổi.</p>
+                </div>
+                <div className="relative w-full md:w-72">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-on-surface-variant opacity-50" />
+                  <input 
+                    type="text" 
+                    placeholder="Tìm kiếm bản ghi..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full bg-surface-container-low border border-surface-container-high rounded-xl pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary transition-all"
+                  />
+                </div>
               </header>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                 <div className="lg:col-span-4 flex flex-col gap-4">
-                  <div className="bg-surface-container-low rounded-xl p-2 space-y-2 max-h-[70vh] overflow-y-auto">
-                    {loading ? (
-                      <div className="p-4 text-center text-on-surface-variant">Đang tải...</div>
-                    ) : recordings.length === 0 ? (
-                      <div className="p-4 text-center text-on-surface-variant">Chưa có bản ghi nào.</div>
-                    ) : (
-                      recordings.map(rec => (
-                        <div 
-                          key={rec.id}
-                          onClick={() => setSelectedRecording(rec)}
-                          className={cn(
-                            "p-4 rounded-lg shadow-sm cursor-pointer transition-all",
-                            selectedRecording?.id === rec.id ? "bg-white border-l-4 border-primary" : "hover:bg-surface-container-high"
+                  {(() => {
+                    const filteredRecordings = recordings.filter(r => r.title.toLowerCase().includes(searchQuery.toLowerCase()));
+                    const isAllFilteredSelected = filteredRecordings.length > 0 && filteredRecordings.every(r => selectedIds.includes(r.id));
+                    
+                    return (
+                      <>
+                        <div className="flex items-center justify-between px-2">
+                          <div className="flex items-center gap-2">
+                            <input 
+                              type="checkbox" 
+                              checked={isAllFilteredSelected}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  const newSelected = Array.from(new Set([...selectedIds, ...filteredRecordings.map(r => r.id)]));
+                                  setSelectedIds(newSelected);
+                                } else {
+                                  const filteredIds = filteredRecordings.map(r => r.id);
+                                  setSelectedIds(selectedIds.filter(id => !filteredIds.includes(id)));
+                                }
+                              }}
+                              className="w-4 h-4 rounded border-surface-container-high text-primary focus:ring-primary"
+                            />
+                            <span className="text-xs font-bold text-on-surface-variant uppercase tracking-wider">
+                              {searchQuery ? "Chọn kết quả lọc" : "Chọn tất cả"}
+                            </span>
+                          </div>
+                          {selectedIds.length > 0 && (
+                            <button 
+                              onClick={() => {
+                                setItemToDelete(null);
+                                setIsDeleteModalOpen(true);
+                              }}
+                              className="text-xs font-bold text-error uppercase tracking-wider hover:underline flex items-center gap-1"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              Xóa ({selectedIds.length})
+                            </button>
                           )}
-                        >
-                          <div className="flex justify-between items-start mb-1">
-                            <span className="text-xs font-bold text-primary uppercase tracking-wider">
-                              {rec.is_important && <Star className="w-3 h-3 fill-current inline mr-1" />}
-                              {format(new Date(rec.created_at), 'HH:mm')}
-                            </span>
-                            <span className="text-xs text-on-surface-variant">{format(new Date(rec.created_at), 'dd/MM/yyyy')}</span>
-                          </div>
-                          <h4 className="font-headline font-bold text-on-surface truncate">{rec.title}</h4>
-                          <div className="flex items-center gap-3 mt-2">
-                            <span className="flex items-center gap-1 text-xs text-on-surface-variant">
-                              <Play className="w-3 h-3" /> {formatDuration(rec.duration)}
-                            </span>
-                          </div>
                         </div>
-                      ))
-                    )}
-                  </div>
+                        <div className="bg-surface-container-low rounded-xl p-2 space-y-2 max-h-[70vh] overflow-y-auto">
+                          {loading ? (
+                            <div className="p-4 text-center text-on-surface-variant">Đang tải...</div>
+                          ) : filteredRecordings.length === 0 ? (
+                            <div className="p-4 text-center text-on-surface-variant">Không tìm thấy bản ghi nào.</div>
+                          ) : (
+                            filteredRecordings.map(rec => (
+                              <div 
+                                key={rec.id}
+                                className={cn(
+                                  "p-4 rounded-lg shadow-sm cursor-pointer transition-all flex items-start gap-3",
+                                  selectedRecording?.id === rec.id ? "bg-white border-l-4 border-primary" : "hover:bg-surface-container-high"
+                                )}
+                              >
+                                <input 
+                                  type="checkbox" 
+                                  checked={selectedIds.includes(rec.id)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setSelectedIds(prev => [...prev, rec.id]);
+                                    } else {
+                                      setSelectedIds(prev => prev.filter(id => id !== rec.id));
+                                    }
+                                  }}
+                                  className="mt-1 w-4 h-4 rounded border-surface-container-high text-primary focus:ring-primary"
+                                />
+                                <div className="flex-1" onClick={() => setSelectedRecording(rec)}>
+                                  <div className="flex justify-between items-start mb-1">
+                                    <span className="text-xs font-bold text-primary uppercase tracking-wider">
+                                      {rec.is_important && <Star className="w-3 h-3 fill-current inline mr-1" />}
+                                      {format(new Date(rec.created_at), 'HH:mm')}
+                                    </span>
+                                    <span className="text-xs text-on-surface-variant">{format(new Date(rec.created_at), 'dd/MM/yyyy')}</span>
+                                  </div>
+                                  <h4 className="font-headline font-bold text-on-surface truncate">{rec.title}</h4>
+                                  <div className="flex items-center gap-3 mt-2">
+                                    <span className="flex items-center gap-1 text-xs text-on-surface-variant">
+                                      <Play className="w-3 h-3" /> {formatDuration(rec.duration)}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
 
                 <div className="lg:col-span-8 space-y-6">
@@ -1452,23 +1531,31 @@ const AdminDashboard = () => {
               <div className="bg-error/10 w-16 h-16 rounded-full flex items-center justify-center mb-6 mx-auto">
                 <Trash2 className="text-error w-8 h-8" />
               </div>
-              <h3 className="text-2xl font-black mb-2 font-headline tracking-tighter text-on-surface text-center">Delete Recording?</h3>
-              <p className="text-on-surface-variant text-center mb-8">
-                Hành động này không thể hoàn tác. Bản ghi và file âm thanh sẽ bị xóa vĩnh viễn khỏi hệ thống.
+              <h3 className="text-2xl font-black mb-2 font-headline tracking-tighter text-on-surface text-center">
+                {itemToDelete ? "Xóa bản ghi?" : `Xóa ${selectedIds.length} bản ghi?`}
+              </h3>
+              <p className="text-on-surface-variant text-center mb-8 leading-relaxed">
+                {itemToDelete 
+                  ? `Bạn có chắc chắn muốn xóa "${itemToDelete.title}"? Hành động này không thể hoàn tác.`
+                  : `Bạn có chắc chắn muốn xóa ${selectedIds.length} bản ghi đã chọn? Hành động này không thể hoàn tác.`
+                }
               </p>
               <div className="flex gap-3">
                 <button 
-                  onClick={() => setIsDeleteModalOpen(false)}
+                  onClick={() => {
+                    setIsDeleteModalOpen(false);
+                    setItemToDelete(null);
+                  }}
                   className="flex-1 px-6 py-3 rounded-xl font-bold text-on-surface-variant hover:bg-surface-container-high transition-colors"
                 >
-                  Cancel
+                  Hủy
                 </button>
                 <button 
-                  onClick={deleteRecording}
+                  onClick={deleteMultipleRecordings}
                   disabled={isActionLoading}
-                  className="flex-1 bg-error text-white px-6 py-3 rounded-xl font-bold shadow-lg hover:shadow-error/20 transition-all disabled:opacity-50"
+                  className="flex-1 bg-error text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-error/20 hover:shadow-error/30 transition-all disabled:opacity-50"
                 >
-                  {isActionLoading ? 'Deleting...' : 'Delete Forever'}
+                  {isActionLoading ? 'Đang xóa...' : 'Xóa ngay'}
                 </button>
               </div>
             </motion.div>
