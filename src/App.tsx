@@ -1,12 +1,69 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
-import { Mic, Settings, User, Play, Square, Pause, Trash2, Star, ChevronRight, LogOut, LayoutDashboard, ShieldCheck, Download, Share2, Search, MoreVertical, Upload } from 'lucide-react';
+import { Mic, Settings, User, Play, Square, Pause, Trash2, Star, ChevronRight, LogOut, LayoutDashboard, ShieldCheck, Download, Share2, Search, MoreVertical, Upload, Edit2, FileText, X, CheckCircle2, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
+import { saveAs } from 'file-saver';
+import { Document, Packer, Paragraph, TextRun, AlignmentType, HeadingLevel } from 'docx';
 import { cn, formatDuration } from './lib/utils';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import { transcribeAudio } from './services/gemini';
 import { Recording, TranscriptItem } from './types';
+
+// --- Utils ---
+
+const exportToWord = async (data: { title: string, transcript: TranscriptItem[], summary?: string, created_at: string }) => {
+  if (!data.transcript || data.transcript.length === 0) {
+    alert("Không có transcript để export.");
+    return;
+  }
+
+  const doc = new Document({
+    sections: [{
+      properties: {},
+      children: [
+        new Paragraph({
+          text: data.title,
+          heading: HeadingLevel.HEADING_1,
+          alignment: AlignmentType.CENTER,
+          spacing: { after: 200 }
+        }),
+        new Paragraph({
+          children: [
+            new TextRun({ text: `Ngày tạo: ${format(new Date(data.created_at), 'dd/MM/yyyy HH:mm')}`, bold: true }),
+          ],
+          spacing: { after: 400 }
+        }),
+        ...(data.summary ? [
+          new Paragraph({
+            text: "TÓM TẮT NỘI DUNG",
+            heading: HeadingLevel.HEADING_2,
+            spacing: { before: 200, after: 100 }
+          }),
+          new Paragraph({
+            text: data.summary,
+            spacing: { after: 400 }
+          })
+        ] : []),
+        new Paragraph({
+          text: "TRANSCRIPT CHI TIẾT",
+          heading: HeadingLevel.HEADING_2,
+          spacing: { before: 200, after: 100 }
+        }),
+        ...data.transcript.map(item => new Paragraph({
+          children: [
+            new TextRun({ text: `[${item.timestamp}] ${item.speaker} (${item.gender || 'Không rõ'}): `, bold: true }),
+            new TextRun({ text: item.text, italics: item.isUncertain })
+          ],
+          spacing: { after: 100 }
+        }))
+      ]
+    }]
+  });
+
+  const blob = await Packer.toBlob(doc);
+  saveAs(blob, `${data.title.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_transcript.docx`);
+};
 
 // --- Components ---
 
@@ -41,13 +98,7 @@ const Navbar = () => {
           </nav>
         </div>
         <div className="flex items-center gap-4">
-          <button className="bg-gradient-to-br from-primary to-secondary text-white px-6 py-2 rounded-lg font-bold shadow-md scale-95 active:scale-90 transition-transform">
-            Record
-          </button>
-          <div className="flex gap-2">
-            <Settings className="text-on-surface-variant cursor-pointer hover:text-primary transition-colors w-5 h-5" />
-            <User className="text-on-surface-variant cursor-pointer hover:text-primary transition-colors w-5 h-5" />
-          </div>
+          {/* Removed 3 icons as requested */}
         </div>
       </div>
     </header>
@@ -69,6 +120,10 @@ const Dashboard = () => {
   const [finalAudioBlob, setFinalAudioBlob] = useState<Blob | null>(null);
   const [shouldSave, setShouldSave] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [pendingTitle, setPendingTitle] = useState("");
+  const [isTitleDuplicate, setIsTitleDuplicate] = useState(false);
+  const [savedRecordingId, setSavedRecordingId] = useState<string | null>(null);
   const allBlobsRef = useRef<Blob[]>([]);
   const isWaitingForFinalBlobRef = useRef(false);
   const fullSummaryRef = useRef<string>("");
@@ -78,12 +133,26 @@ const Dashboard = () => {
   // Effect to handle final save when recording is stopped and processing is done
   useEffect(() => {
     if (shouldSave && !isRecording && processingCount === 0 && (finalAudioBlob || allBlobsRef.current.length > 0)) {
-      saveToSupabase();
+      // Show modal instead of saving directly
+      const defaultTitle = `Meeting ${format(new Date(), 'dd/MM/yyyy HH:mm')}`;
+      setPendingTitle(defaultTitle);
+      setShowSaveModal(true);
       setShouldSave(false);
     }
   }, [shouldSave, isRecording, processingCount, finalAudioBlob, fullTranscript, duration]);
 
-  const saveToSupabase = async () => {
+  const checkDuplicateTitle = async (title: string) => {
+    if (!isSupabaseConfigured) return false;
+    const { data, error } = await supabase
+      .from('recordings')
+      .select('id')
+      .eq('title', title)
+      .limit(1);
+    
+    return data && data.length > 0;
+  };
+
+  const saveToSupabase = async (title: string) => {
     if (!isSupabaseConfigured) {
       console.warn("Supabase chưa được cấu hình. Vui lòng kiểm tra API Key.");
       return;
@@ -97,6 +166,14 @@ const Dashboard = () => {
 
     setSaveStatus('saving');
     try {
+      // Check duplicate again just in case
+      const isDuplicate = await checkDuplicateTitle(title);
+      if (isDuplicate) {
+        setIsTitleDuplicate(true);
+        setSaveStatus('idle');
+        return;
+      }
+
       // Xác định extension dựa trên mimeType
       let extension = 'webm';
       if (blobToSave.type.includes('wav')) extension = 'wav';
@@ -118,14 +195,14 @@ const Dashboard = () => {
         .from('recordings')
         .getPublicUrl(fileName);
 
-      const { error: dbError } = await supabase.from('recordings').insert({
-        title: `Meeting ${format(new Date(), 'dd/MM/yyyy HH:mm')}`,
+      const { data: insertData, error: dbError } = await supabase.from('recordings').insert({
+        title: title,
         audio_url: publicUrl,
         transcript: fullTranscript,
         summary: fullSummaryRef.current,
         duration: duration,
         is_important: false
-      });
+      }).select();
 
       if (dbError) {
         console.error("Chi tiết lỗi Database:", dbError);
@@ -133,13 +210,26 @@ const Dashboard = () => {
       }
       
       console.log("Đã lưu vào Supabase thành công!");
+      if (insertData && insertData.length > 0) {
+        setSavedRecordingId(insertData[0].id);
+      }
       setSaveStatus('success');
+      setShowSaveModal(false);
       // Reset status after a while
       setTimeout(() => setSaveStatus('idle'), 5000);
     } catch (storageErr: any) {
       console.error("Lỗi Supabase khi lưu bản ghi:", storageErr);
       setSaveStatus('error');
     }
+  };
+
+  const handleExport = () => {
+    exportToWord({
+      title: pendingTitle,
+      transcript: fullTranscript,
+      summary: fullSummaryRef.current,
+      created_at: new Date().toISOString()
+    });
   };
 
   useEffect(() => {
@@ -621,6 +711,119 @@ const Dashboard = () => {
           <p className="text-sm text-on-surface-variant">Dữ liệu của bạn được mã hóa và lưu trữ an toàn trên đám mây.</p>
         </div>
       </section>
+
+      {/* Save Modal */}
+      <AnimatePresence>
+        {showSaveModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
+            >
+              <div className="p-6">
+                <div className="flex justify-between items-center mb-6">
+                  <h3 className="text-xl font-headline font-black text-on-surface">Lưu bản ghi</h3>
+                  <button onClick={() => setShowSaveModal(false)} className="text-on-surface-variant hover:text-on-surface">
+                    <X className="w-6 h-6" />
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-bold text-on-surface-variant mb-2 uppercase tracking-wider">Tên bản ghi</label>
+                    <input 
+                      type="text" 
+                      value={pendingTitle}
+                      onChange={(e) => {
+                        setPendingTitle(e.target.value);
+                        setIsTitleDuplicate(false);
+                      }}
+                      className={cn(
+                        "w-full px-4 py-3 rounded-xl border font-body text-on-surface focus:outline-none focus:ring-2 transition-all",
+                        isTitleDuplicate ? "border-error focus:ring-error/20" : "border-outline-variant focus:ring-primary/20"
+                      )}
+                      placeholder="Nhập tên cho cuộc hội thoại..."
+                      autoFocus
+                    />
+                    {isTitleDuplicate && (
+                      <p className="mt-2 text-xs text-error font-bold flex items-center gap-1">
+                        <AlertCircle className="w-3 h-3" /> Tên này đã tồn tại. Vui lòng chọn tên khác.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="bg-surface-container-low p-4 rounded-xl border border-outline-variant/30">
+                    <div className="flex justify-between text-xs text-on-surface-variant mb-1">
+                      <span>Thời lượng</span>
+                      <span>{formatDuration(duration)}</span>
+                    </div>
+                    <div className="flex justify-between text-xs text-on-surface-variant">
+                      <span>Ngày tạo</span>
+                      <span>{format(new Date(), 'dd/MM/yyyy HH:mm')}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-8 flex gap-3">
+                  <button 
+                    onClick={() => setShowSaveModal(false)}
+                    className="flex-1 py-3 rounded-xl font-bold text-on-surface-variant hover:bg-surface-container-high transition-colors"
+                  >
+                    Hủy
+                  </button>
+                  <button 
+                    onClick={() => saveToSupabase(pendingTitle)}
+                    disabled={!pendingTitle.trim() || saveStatus === 'saving'}
+                    className="flex-1 py-3 bg-primary text-white rounded-xl font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all disabled:opacity-50 disabled:shadow-none flex items-center justify-center gap-2"
+                  >
+                    {saveStatus === 'saving' ? (
+                      <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    ) : (
+                      <>Lưu ngay</>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Success State Overlay */}
+      <AnimatePresence>
+        {saveStatus === 'success' && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-white/90 backdrop-blur-md"
+          >
+            <div className="text-center max-w-sm">
+              <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                <CheckCircle2 className="w-10 h-10 text-green-600" />
+              </div>
+              <h2 className="text-3xl font-headline font-black text-on-surface mb-2">Đã lưu thành công!</h2>
+              <p className="text-on-surface-variant mb-8">Bản ghi của bạn đã được lưu trữ an toàn trong Admin Panel.</p>
+              <div className="flex flex-col gap-3">
+                <button 
+                  onClick={handleExport}
+                  className="w-full py-4 bg-primary text-white rounded-2xl font-bold shadow-xl shadow-primary/20 hover:bg-primary/90 transition-all flex items-center justify-center gap-2"
+                >
+                  <FileText className="w-5 h-5" /> Export Script (Word)
+                </button>
+                <button 
+                  onClick={() => setSaveStatus('idle')}
+                  className="w-full py-4 text-on-surface-variant font-bold hover:bg-surface-container-high rounded-2xl transition-all"
+                >
+                  Quay lại Dashboard
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </main>
   );
 };
@@ -831,7 +1034,7 @@ const AdminDashboard = () => {
                               {rec.is_important && <Star className="w-3 h-3 fill-current inline mr-1" />}
                               {format(new Date(rec.created_at), 'HH:mm')}
                             </span>
-                            <span className="text-xs text-on-surface-variant">{format(new Date(rec.created_at), 'dd/MM')}</span>
+                            <span className="text-xs text-on-surface-variant">{format(new Date(rec.created_at), 'dd/MM/yyyy HH:mm')}</span>
                           </div>
                           <h4 className="font-headline font-bold text-on-surface truncate">{rec.title}</h4>
                           <div className="flex items-center gap-3 mt-2">
@@ -866,7 +1069,10 @@ const AdminDashboard = () => {
                               <Star className={cn("w-5 h-5", selectedRecording.is_important && "fill-current")} />
                             </button>
                             <button onClick={() => renameRecording(selectedRecording.id, selectedRecording.title)} className="p-2 text-on-surface-variant hover:text-primary transition-colors">
-                              <Settings className="w-5 h-5" />
+                              <Edit2 className="w-5 h-5" />
+                            </button>
+                            <button onClick={() => exportToWord(selectedRecording)} className="p-2 text-on-surface-variant hover:text-primary transition-colors" title="Export to Word">
+                              <FileText className="w-5 h-5" />
                             </button>
                             <button onClick={() => deleteRecording(selectedRecording.id)} className="p-2 text-on-surface-variant hover:text-error transition-colors">
                               <Trash2 className="w-5 h-5" />
