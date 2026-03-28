@@ -1,69 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
-import { Mic, Settings, User, Play, Square, Pause, Trash2, Star, ChevronRight, LogOut, LayoutDashboard, ShieldCheck, Download, Share2, Search, MoreVertical, Upload, Edit2, FileText, X, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Mic, Settings, User, Play, Square, Pause, Trash2, Star, ChevronRight, LogOut, LayoutDashboard, ShieldCheck, Download, Share2, Search, MoreVertical, Upload, Edit3, FileText, Save, RotateCcw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
+import { Document, Packer, Paragraph, TextRun } from 'docx';
 import { saveAs } from 'file-saver';
-import { Document, Packer, Paragraph, TextRun, AlignmentType, HeadingLevel } from 'docx';
 import { cn, formatDuration } from './lib/utils';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import { transcribeAudio } from './services/gemini';
 import { Recording, TranscriptItem } from './types';
-
-// --- Utils ---
-
-const exportToWord = async (data: { title: string, transcript: TranscriptItem[], summary?: string, created_at: string }) => {
-  if (!data.transcript || data.transcript.length === 0) {
-    alert("Không có transcript để export.");
-    return;
-  }
-
-  const doc = new Document({
-    sections: [{
-      properties: {},
-      children: [
-        new Paragraph({
-          text: data.title,
-          heading: HeadingLevel.HEADING_1,
-          alignment: AlignmentType.CENTER,
-          spacing: { after: 200 }
-        }),
-        new Paragraph({
-          children: [
-            new TextRun({ text: `Ngày tạo: ${format(new Date(data.created_at), 'dd/MM/yyyy HH:mm')}`, bold: true }),
-          ],
-          spacing: { after: 400 }
-        }),
-        ...(data.summary ? [
-          new Paragraph({
-            text: "TÓM TẮT NỘI DUNG",
-            heading: HeadingLevel.HEADING_2,
-            spacing: { before: 200, after: 100 }
-          }),
-          new Paragraph({
-            text: data.summary,
-            spacing: { after: 400 }
-          })
-        ] : []),
-        new Paragraph({
-          text: "TRANSCRIPT CHI TIẾT",
-          heading: HeadingLevel.HEADING_2,
-          spacing: { before: 200, after: 100 }
-        }),
-        ...data.transcript.map(item => new Paragraph({
-          children: [
-            new TextRun({ text: `[${item.timestamp}] ${item.speaker} (${item.gender || 'Không rõ'}): `, bold: true }),
-            new TextRun({ text: item.text, italics: item.isUncertain })
-          ],
-          spacing: { after: 100 }
-        }))
-      ]
-    }]
-  });
-
-  const blob = await Packer.toBlob(doc);
-  saveAs(blob, `${data.title.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_transcript.docx`);
-};
 
 // --- Components ---
 
@@ -120,39 +65,39 @@ const Dashboard = () => {
   const [finalAudioBlob, setFinalAudioBlob] = useState<Blob | null>(null);
   const [shouldSave, setShouldSave] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
-  const [showSaveModal, setShowSaveModal] = useState(false);
-  const [pendingTitle, setPendingTitle] = useState("");
-  const [isTitleDuplicate, setIsTitleDuplicate] = useState(false);
-  const [savedRecordingId, setSavedRecordingId] = useState<string | null>(null);
+  const [isNamingModalOpen, setIsNamingModalOpen] = useState(false);
+  const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [namingError, setNamingError] = useState("");
+  const [newRecordingTitle, setNewRecordingTitle] = useState("");
   const allBlobsRef = useRef<Blob[]>([]);
   const isWaitingForFinalBlobRef = useRef(false);
   const fullSummaryRef = useRef<string>("");
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Effect to handle final save when recording is stopped and processing is done
+  // Effect to handle state when processing is done
   useEffect(() => {
     if (shouldSave && !isRecording && processingCount === 0 && (finalAudioBlob || allBlobsRef.current.length > 0)) {
-      // Show modal instead of saving directly
-      const defaultTitle = `Meeting ${format(new Date(), 'dd/MM/yyyy HH:mm')}`;
-      setPendingTitle(defaultTitle);
-      setShowSaveModal(true);
-      setShouldSave(false);
+      // We no longer auto-save here. The naming modal handles it.
+      // But we can use this to signal that the recording is ready to be saved.
     }
   }, [shouldSave, isRecording, processingCount, finalAudioBlob, fullTranscript, duration]);
 
-  const checkDuplicateTitle = async (title: string) => {
-    if (!isSupabaseConfigured) return false;
-    const { data, error } = await supabase
-      .from('recordings')
-      .select('id')
-      .eq('title', title)
-      .limit(1);
-    
-    return data && data.length > 0;
+  const resetRecording = () => {
+    setCurrentTranscript("");
+    setFullTranscript([]);
+    setLastAudioUrl(null);
+    setFinalAudioBlob(null);
+    setDuration(0);
+    setSaveStatus('idle');
+    setNewRecordingTitle("");
+    setNamingError("");
+    allBlobsRef.current = [];
+    fullSummaryRef.current = "";
+    setIsResetModalOpen(false);
   };
 
-  const saveToSupabase = async (title: string) => {
+  const saveToSupabase = async (customTitle?: string) => {
     if (!isSupabaseConfigured) {
       console.warn("Supabase chưa được cấu hình. Vui lòng kiểm tra API Key.");
       return;
@@ -164,16 +109,24 @@ const Dashboard = () => {
       return;
     }
 
+    const titleToSave = customTitle || `Meeting ${format(new Date(), 'yyyy-MM-dd HH:mm')}`;
+    setNamingError("");
+
+    // Kiểm tra trùng tên
+    const { data: existing } = await supabase
+      .from('recordings')
+      .select('id')
+      .eq('title', titleToSave)
+      .maybeSingle();
+
+    if (existing) {
+      setNamingError("Tên bản ghi đã tồn tại. Vui lòng chọn tên khác.");
+      setIsNamingModalOpen(true);
+      return;
+    }
+
     setSaveStatus('saving');
     try {
-      // Check duplicate again just in case
-      const isDuplicate = await checkDuplicateTitle(title);
-      if (isDuplicate) {
-        setIsTitleDuplicate(true);
-        setSaveStatus('idle');
-        return;
-      }
-
       // Xác định extension dựa trên mimeType
       let extension = 'webm';
       if (blobToSave.type.includes('wav')) extension = 'wav';
@@ -195,14 +148,14 @@ const Dashboard = () => {
         .from('recordings')
         .getPublicUrl(fileName);
 
-      const { data: insertData, error: dbError } = await supabase.from('recordings').insert({
-        title: title,
+      const { error: dbError } = await supabase.from('recordings').insert({
+        title: titleToSave,
         audio_url: publicUrl,
         transcript: fullTranscript,
         summary: fullSummaryRef.current,
         duration: duration,
         is_important: false
-      }).select();
+      });
 
       if (dbError) {
         console.error("Chi tiết lỗi Database:", dbError);
@@ -210,11 +163,10 @@ const Dashboard = () => {
       }
       
       console.log("Đã lưu vào Supabase thành công!");
-      if (insertData && insertData.length > 0) {
-        setSavedRecordingId(insertData[0].id);
-      }
       setSaveStatus('success');
-      setShowSaveModal(false);
+      setNamingError("");
+      setIsNamingModalOpen(false);
+      setShouldSave(false);
       // Reset status after a while
       setTimeout(() => setSaveStatus('idle'), 5000);
     } catch (storageErr: any) {
@@ -223,12 +175,38 @@ const Dashboard = () => {
     }
   };
 
-  const handleExport = () => {
-    exportToWord({
-      title: pendingTitle,
-      transcript: fullTranscript,
-      summary: fullSummaryRef.current,
-      created_at: new Date().toISOString()
+  const exportToWord = (title: string, transcript: TranscriptItem[]) => {
+    const doc = new Document({
+      sections: [{
+        properties: {},
+        children: [
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: `Transcript: ${title}`,
+                bold: true,
+                size: 32,
+              }),
+            ],
+          }),
+          new Paragraph({ text: "" }),
+          ...transcript.map(item => new Paragraph({
+            children: [
+              new TextRun({
+                text: `[${item.timestamp}] ${item.speaker} (${item.gender}): `,
+                bold: true,
+              }),
+              new TextRun({
+                text: item.text,
+              }),
+            ],
+          })),
+        ],
+      }],
+    });
+
+    Packer.toBlob(doc).then(blob => {
+      saveAs(blob, `${title}.docx`);
     });
   };
 
@@ -461,10 +439,14 @@ const Dashboard = () => {
           
           setFullTranscript(result.transcript);
           fullSummaryRef.current = result.summary;
-          setShouldSave(true); 
           setIsProcessing(false);
           setCurrentTranscript("");
-          console.log("Import file thành công và đã gửi lưu Admin.");
+          
+          // Show naming modal for imported files too
+          setNewRecordingTitle(file.name.split('.')[0] || `Imported ${format(new Date(), 'yyyy-MM-dd HH:mm')}`);
+          setIsNamingModalOpen(true);
+          setShouldSave(true);
+          console.log("Import file thành công. Đang chờ người dùng đặt tên để lưu.");
         } catch (err: any) {
           console.error("Transcription error:", err);
           setCurrentTranscript(`[Lỗi AI: ${err.message}]`);
@@ -527,11 +509,102 @@ const Dashboard = () => {
         // Nếu recorder đã dừng (đang ở trạng thái pause), ta có thể finalize luôn
         finalizeRecording();
       }
+
+      // Show naming modal
+      setNewRecordingTitle(`Meeting ${format(new Date(), 'yyyy-MM-dd HH:mm')}`);
+      setIsNamingModalOpen(true);
     }
   };
 
   return (
     <main className="flex-1 w-full max-w-5xl mx-auto px-6 pt-32 pb-12 flex flex-col items-center justify-center gap-16">
+      {/* Naming Modal */}
+      <AnimatePresence>
+        {isNamingModalOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm px-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="bg-surface p-8 rounded-2xl shadow-2xl w-full max-w-md border border-surface-container-low"
+            >
+              <h3 className="text-2xl font-black mb-6 font-headline tracking-tighter text-on-surface">Save Recording</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-bold text-on-surface-variant mb-2 uppercase tracking-widest">Recording Title</label>
+                  <input 
+                    type="text" 
+                    value={newRecordingTitle}
+                    onChange={(e) => {
+                      setNewRecordingTitle(e.target.value);
+                      if (namingError) setNamingError("");
+                    }}
+                    className={cn(
+                      "w-full bg-surface-container-low border rounded-xl px-4 py-3 focus:outline-none focus:ring-2 transition-all text-on-surface",
+                      namingError ? "border-error focus:ring-error" : "border-surface-container-high focus:ring-primary"
+                    )}
+                    placeholder="Enter title..."
+                  />
+                  {namingError && (
+                    <p className="mt-2 text-xs font-bold text-error uppercase tracking-wider animate-shake">
+                      {namingError}
+                    </p>
+                  )}
+                </div>
+                <div className="flex gap-3 pt-4">
+                  <button 
+                    onClick={() => setIsNamingModalOpen(false)}
+                    className="flex-1 px-6 py-3 rounded-xl font-bold text-on-surface-variant hover:bg-surface-container-high transition-colors"
+                  >
+                    Discard
+                  </button>
+                  <button 
+                    onClick={() => saveToSupabase(newRecordingTitle)}
+                    disabled={saveStatus === 'saving'}
+                    className="flex-1 bg-primary text-white px-6 py-3 rounded-xl font-bold shadow-lg hover:shadow-primary/20 transition-all disabled:opacity-50"
+                  >
+                    {saveStatus === 'saving' ? 'Saving...' : 'Save Now'}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {isResetModalOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm px-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="bg-surface p-8 rounded-2xl shadow-2xl w-full max-w-md border border-surface-container-low"
+            >
+              <div className="bg-error/10 w-16 h-16 rounded-full flex items-center justify-center mb-6 mx-auto">
+                <RotateCcw className="text-error w-8 h-8" />
+              </div>
+              <h3 className="text-2xl font-black mb-2 font-headline tracking-tighter text-on-surface text-center">Reset Recording?</h3>
+              <p className="text-on-surface-variant text-center mb-8">
+                Hành động này sẽ xóa toàn bộ dữ liệu hiện tại (transcript, audio). Bạn có chắc chắn muốn tiếp tục?
+              </p>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setIsResetModalOpen(false)}
+                  className="flex-1 px-6 py-3 rounded-xl font-bold text-on-surface-variant hover:bg-surface-container-high transition-colors"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={resetRecording}
+                  className="flex-1 bg-error text-white px-6 py-3 rounded-xl font-bold shadow-lg hover:shadow-error/20 transition-all"
+                >
+                  Reset Now
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       <section className="w-full flex flex-col items-center gap-8">
         <div className="relative group flex flex-col items-center gap-6">
           <div className="flex items-center gap-4">
@@ -542,7 +615,7 @@ const Dashboard = () => {
               )}></div>
               <button 
                 onClick={isRecording ? stopRecording : startRecording}
-                disabled={isProcessing && !isRecording}
+                disabled={(isProcessing && !isRecording) || (isPaused && isProcessing)}
                 className={cn(
                   "relative w-24 h-24 rounded-full flex items-center justify-center text-white shadow-2xl transition-all active:scale-90 hover:scale-105 group disabled:opacity-50",
                   isRecording ? "bg-error" : "bg-gradient-to-br from-primary to-secondary"
@@ -587,9 +660,52 @@ const Dashboard = () => {
           </div>
 
           {lastAudioUrl && !isRecording && (
-            <div className="w-full max-w-md bg-surface-container-low p-4 rounded-xl border border-outline-variant/20 flex flex-col gap-2">
-              <p className="text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">Nghe lại bản vừa ghi</p>
-              <audio controls src={lastAudioUrl} className="w-full h-8" />
+            <div className="w-full max-w-2xl bg-surface-container-lowest p-6 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-outline-variant/10 flex flex-col gap-6">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                    <Mic className="w-5 h-5 text-primary" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface-variant opacity-60">Bản ghi vừa hoàn tất</p>
+                    <h4 className="font-headline font-bold text-on-surface">{newRecordingTitle || "Chưa đặt tên"}</h4>
+                  </div>
+                </div>
+                
+                <div className="flex items-center gap-2">
+                  {saveStatus !== 'success' && (
+                    <>
+                      <button 
+                        onClick={() => setIsNamingModalOpen(true)}
+                        className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-xl text-xs font-bold shadow-lg shadow-primary/20 hover:scale-105 transition-all active:scale-95"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        Lưu bản ghi
+                      </button>
+                      <button 
+                        onClick={() => setIsResetModalOpen(true)}
+                        className="flex items-center gap-2 px-4 py-2 bg-surface-container-high text-error rounded-xl text-xs font-bold hover:bg-error/10 transition-all active:scale-95"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        Hủy
+                      </button>
+                    </>
+                  )}
+                  {fullTranscript.length > 0 && (
+                    <button 
+                      onClick={() => exportToWord(newRecordingTitle || "Recording", fullTranscript)}
+                      className="flex items-center gap-2 px-4 py-2 bg-surface-container-high text-primary rounded-xl text-xs font-bold hover:bg-primary/10 transition-all active:scale-95"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      Xuất Word
+                    </button>
+                  )}
+                </div>
+              </div>
+              
+              <div className="bg-surface-container-low p-4 rounded-xl border border-outline-variant/5">
+                <audio controls src={lastAudioUrl} className="w-full h-10" />
+              </div>
             </div>
           )}
         </div>
@@ -672,11 +788,60 @@ const Dashboard = () => {
               <div className="text-xl font-body text-on-surface whitespace-pre-wrap italic opacity-70">
                 {currentTranscript}
               </div>
-            ) : (
+            ) : isRecording ? (
               <div className="flex flex-col gap-4 opacity-30">
                 <div className="h-4 bg-surface-container rounded w-3/4"></div>
                 <div className="h-4 bg-surface-container rounded w-1/2"></div>
                 <div className="h-4 bg-surface-container rounded w-2/3"></div>
+              </div>
+            ) : (
+              <div className="py-10 flex flex-col items-center text-center space-y-8">
+                <div className="space-y-2">
+                  <h3 className="text-2xl font-headline font-bold text-on-surface">Chào mừng bạn đến với Sonic Lens</h3>
+                  <p className="text-on-surface-variant max-w-md mx-auto">Hệ thống ghi âm và chuyển đổi giọng nói thông minh sử dụng công nghệ AI tiên tiến.</p>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-2xl text-left">
+                  <div className="bg-surface-container-low p-5 rounded-xl border border-outline-variant/10 flex gap-4">
+                    <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                      <Mic className="w-5 h-5 text-primary" />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-sm mb-1">Ghi âm trực tiếp</h4>
+                      <p className="text-xs text-on-surface-variant leading-relaxed">Nhấn nút Microphone để bắt đầu ghi âm. AI sẽ tự động nhận diện người nói và chuyển đổi thành văn bản theo thời gian thực.</p>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-surface-container-low p-5 rounded-xl border border-outline-variant/10 flex gap-4">
+                    <div className="w-10 h-10 rounded-full bg-secondary/10 flex items-center justify-center shrink-0">
+                      <Upload className="w-5 h-5 text-secondary" />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-sm mb-1">Tải lên file có sẵn</h4>
+                      <p className="text-xs text-on-surface-variant leading-relaxed">Bạn có thể tải lên các file âm thanh hoặc video (.mp3, .mp4, .m4a) để AI phân tích và tạo transcript.</p>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-surface-container-low p-5 rounded-xl border border-outline-variant/10 flex gap-4">
+                    <div className="w-10 h-10 rounded-full bg-tertiary/10 flex items-center justify-center shrink-0">
+                      <FileText className="w-5 h-5 text-tertiary" />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-sm mb-1">Xuất dữ liệu</h4>
+                      <p className="text-xs text-on-surface-variant leading-relaxed">Sau khi ghi âm xong, bạn có thể tóm tắt nội dung bằng AI và xuất transcript ra file Word chuyên nghiệp.</p>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-surface-container-low p-5 rounded-xl border border-outline-variant/10 flex gap-4">
+                    <div className="w-10 h-10 rounded-full bg-primary-fixed/20 flex items-center justify-center shrink-0">
+                      <ShieldCheck className="text-primary w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-sm mb-1">Quản lý Admin</h4>
+                      <p className="text-xs text-on-surface-variant leading-relaxed">Truy cập cổng Admin để quản lý toàn bộ các bản ghi đã lưu, đổi tên hoặc xóa dữ liệu vĩnh viễn.</p>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -711,132 +876,20 @@ const Dashboard = () => {
           <p className="text-sm text-on-surface-variant">Dữ liệu của bạn được mã hóa và lưu trữ an toàn trên đám mây.</p>
         </div>
       </section>
-
-      {/* Save Modal */}
-      <AnimatePresence>
-        {showSaveModal && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.9, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
-            >
-              <div className="p-6">
-                <div className="flex justify-between items-center mb-6">
-                  <h3 className="text-xl font-headline font-black text-on-surface">Lưu bản ghi</h3>
-                  <button onClick={() => setShowSaveModal(false)} className="text-on-surface-variant hover:text-on-surface">
-                    <X className="w-6 h-6" />
-                  </button>
-                </div>
-
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-bold text-on-surface-variant mb-2 uppercase tracking-wider">Tên bản ghi</label>
-                    <input 
-                      type="text" 
-                      value={pendingTitle}
-                      onChange={(e) => {
-                        setPendingTitle(e.target.value);
-                        setIsTitleDuplicate(false);
-                      }}
-                      className={cn(
-                        "w-full px-4 py-3 rounded-xl border font-body text-on-surface focus:outline-none focus:ring-2 transition-all",
-                        isTitleDuplicate ? "border-error focus:ring-error/20" : "border-outline-variant focus:ring-primary/20"
-                      )}
-                      placeholder="Nhập tên cho cuộc hội thoại..."
-                      autoFocus
-                    />
-                    {isTitleDuplicate && (
-                      <p className="mt-2 text-xs text-error font-bold flex items-center gap-1">
-                        <AlertCircle className="w-3 h-3" /> Tên này đã tồn tại. Vui lòng chọn tên khác.
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="bg-surface-container-low p-4 rounded-xl border border-outline-variant/30">
-                    <div className="flex justify-between text-xs text-on-surface-variant mb-1">
-                      <span>Thời lượng</span>
-                      <span>{formatDuration(duration)}</span>
-                    </div>
-                    <div className="flex justify-between text-xs text-on-surface-variant">
-                      <span>Ngày tạo</span>
-                      <span>{format(new Date(), 'dd/MM/yyyy HH:mm')}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-8 flex gap-3">
-                  <button 
-                    onClick={() => setShowSaveModal(false)}
-                    className="flex-1 py-3 rounded-xl font-bold text-on-surface-variant hover:bg-surface-container-high transition-colors"
-                  >
-                    Hủy
-                  </button>
-                  <button 
-                    onClick={() => saveToSupabase(pendingTitle)}
-                    disabled={!pendingTitle.trim() || saveStatus === 'saving'}
-                    className="flex-1 py-3 bg-primary text-white rounded-xl font-bold shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all disabled:opacity-50 disabled:shadow-none flex items-center justify-center gap-2"
-                  >
-                    {saveStatus === 'saving' ? (
-                      <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                    ) : (
-                      <>Lưu ngay</>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* Success State Overlay */}
-      <AnimatePresence>
-        {saveStatus === 'success' && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-white/90 backdrop-blur-md"
-          >
-            <div className="text-center max-w-sm">
-              <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
-                <CheckCircle2 className="w-10 h-10 text-green-600" />
-              </div>
-              <h2 className="text-3xl font-headline font-black text-on-surface mb-2">Đã lưu thành công!</h2>
-              <p className="text-on-surface-variant mb-8">Bản ghi của bạn đã được lưu trữ an toàn trong Admin Panel.</p>
-              <div className="flex flex-col gap-3">
-                <button 
-                  onClick={handleExport}
-                  className="w-full py-4 bg-primary text-white rounded-2xl font-bold shadow-xl shadow-primary/20 hover:bg-primary/90 transition-all flex items-center justify-center gap-2"
-                >
-                  <FileText className="w-5 h-5" /> Export Script (Word)
-                </button>
-                <button 
-                  onClick={() => setSaveStatus('idle')}
-                  className="w-full py-4 text-on-surface-variant font-bold hover:bg-surface-container-high rounded-2xl transition-all"
-                >
-                  Quay lại Dashboard
-                </button>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </main>
   );
 };
 
-const AdminLogin = ({ onLogin }: { onLogin: () => void }) => {
+const AdminLogin = ({ onLogin }: { onLogin: (remember: boolean) => void }) => {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (username === "admin" && password === "admin@1703") {
-      onLogin();
+      onLogin(rememberMe);
     } else {
       setError("Sai tài khoản hoặc mật khẩu.");
     }
@@ -879,6 +932,16 @@ const AdminLogin = ({ onLogin }: { onLogin: () => void }) => {
               />
             </div>
             {error && <p className="text-error text-sm font-medium">{error}</p>}
+            <div className="flex items-center gap-2 ml-1">
+              <input 
+                type="checkbox" 
+                id="rememberMe" 
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="w-4 h-4 rounded border-outline-variant text-primary focus:ring-primary"
+              />
+              <label htmlFor="rememberMe" className="text-sm font-medium text-on-surface-variant cursor-pointer">Ghi nhớ đăng nhập</label>
+            </div>
             <button type="submit" className="w-full sonic-gradient text-white font-headline font-bold py-4 rounded-lg shadow-md hover:shadow-xl transition-all duration-200 flex items-center justify-center gap-2">
               Đăng nhập
             </button>
@@ -894,6 +957,13 @@ const AdminDashboard = () => {
   const [selectedRecording, setSelectedRecording] = useState<Recording | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'recordings' | 'api'>('recordings');
+  const [isRenameModalOpen, setIsRenameModalOpen] = useState(false);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [editTitleValue, setEditTitleValue] = useState("");
+  const [itemToEdit, setItemToEdit] = useState<string | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<Recording | null>(null);
+  const [isActionLoading, setIsActionLoading] = useState(false);
+  const [renameError, setRenameError] = useState("");
 
   useEffect(() => {
     fetchRecordings();
@@ -928,35 +998,122 @@ const AdminDashboard = () => {
     }
   };
 
-  const deleteRecording = async (id: string) => {
-    if (!confirm("Bạn có chắc chắn muốn xóa bản ghi này?")) return;
+  const deleteRecording = async () => {
+    if (!itemToDelete) return;
     
-    const { error } = await supabase
-      .from('recordings')
-      .delete()
-      .eq('id', id);
-    
-    if (!error) {
-      setRecordings(prev => prev.filter(r => r.id !== id));
-      if (selectedRecording?.id === id) setSelectedRecording(null);
+    setIsActionLoading(true);
+    try {
+      // Extract filename from URL
+      const urlParts = itemToDelete.audio_url.split('/');
+      const fileName = urlParts[urlParts.length - 1];
+
+      // Delete from storage
+      const { error: storageError } = await supabase.storage
+        .from('recordings')
+        .remove([fileName]);
+
+      if (storageError) {
+        console.warn("Lỗi khi xóa file từ Storage (có thể file không tồn tại):", storageError.message);
+      }
+
+      // Delete from DB
+      const { error: dbError } = await supabase
+        .from('recordings')
+        .delete()
+        .eq('id', itemToDelete.id);
+      
+      if (!dbError) {
+        setRecordings(prev => prev.filter(r => r.id !== itemToDelete.id));
+        if (selectedRecording?.id === itemToDelete.id) setSelectedRecording(null);
+        setIsDeleteModalOpen(false);
+        setItemToDelete(null);
+      } else {
+        alert("Lỗi khi xóa bản ghi từ Database: " + dbError.message);
+      }
+    } catch (err: any) {
+      console.error("Lỗi xóa bản ghi:", err);
+    } finally {
+      setIsActionLoading(false);
     }
   };
 
-  const renameRecording = async (id: string, currentTitle: string) => {
-    const newTitle = prompt("Nhập tên mới cho bản ghi:", currentTitle);
-    if (!newTitle || newTitle === currentTitle) return;
+  const renameRecording = async () => {
+    if (!itemToEdit || !editTitleValue.trim()) return;
 
-    const { error } = await supabase
-      .from('recordings')
-      .update({ title: newTitle })
-      .eq('id', id);
-    
-    if (!error) {
-      setRecordings(prev => prev.map(r => r.id === id ? { ...r, title: newTitle } : r));
-      if (selectedRecording?.id === id) {
-        setSelectedRecording(prev => prev ? { ...prev, title: newTitle } : null);
+    setIsActionLoading(true);
+    setRenameError("");
+    try {
+      // Kiểm tra trùng tên
+      const { data: existing } = await supabase
+        .from('recordings')
+        .select('id')
+        .eq('title', editTitleValue.trim())
+        .neq('id', itemToEdit) // Don't check against itself
+        .maybeSingle();
+
+      if (existing) {
+        setRenameError("Tên bản ghi đã tồn tại. Vui lòng chọn tên khác.");
+        setIsActionLoading(false);
+        return;
       }
+
+      const { error } = await supabase
+        .from('recordings')
+        .update({ title: editTitleValue.trim() })
+        .eq('id', itemToEdit);
+      
+      if (!error) {
+        setRecordings(prev => prev.map(r => r.id === itemToEdit ? { ...r, title: editTitleValue.trim() } : r));
+        if (selectedRecording?.id === itemToEdit) {
+          setSelectedRecording(prev => prev ? { ...prev, title: editTitleValue.trim() } : null);
+        }
+        setIsRenameModalOpen(false);
+        setItemToEdit(null);
+        setRenameError("");
+      } else {
+        setRenameError("Lỗi khi đổi tên: " + error.message);
+      }
+    } catch (err: any) {
+      console.error("Lỗi đổi tên:", err);
+      setRenameError("Đã xảy ra lỗi không xác định.");
+    } finally {
+      setIsActionLoading(false);
     }
+  };
+
+  const exportToWord = (title: string, transcript: TranscriptItem[]) => {
+    const doc = new Document({
+      sections: [{
+        properties: {},
+        children: [
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: `Transcript: ${title}`,
+                bold: true,
+                size: 32,
+              }),
+            ],
+          }),
+          new Paragraph({ text: "" }),
+          ...transcript.map(item => new Paragraph({
+            children: [
+              new TextRun({
+                text: `[${item.timestamp}] ${item.speaker} (${item.gender}): `,
+                bold: true,
+              }),
+              new TextRun({
+                text: item.text,
+              }),
+            ],
+          })),
+        ],
+      }],
+    });
+
+    Packer.toBlob(doc).then(blob => {
+      saveAs(blob, `${title}.docx`);
+    });
   };
 
   return (
@@ -996,7 +1153,13 @@ const AdminDashboard = () => {
           </button>
         </nav>
         <div className="mt-auto border-t border-outline-variant/30 pt-4">
-          <button onClick={() => window.location.reload()} className="text-on-surface-variant hover:bg-white/50 w-full rounded-lg flex items-center gap-3 px-4 py-3 transition-all duration-200">
+          <button 
+            onClick={() => {
+              localStorage.removeItem("isAdminAuthenticated");
+              window.location.reload();
+            }} 
+            className="text-on-surface-variant hover:bg-white/50 w-full rounded-lg flex items-center gap-3 px-4 py-3 transition-all duration-200"
+          >
             <LogOut className="w-5 h-5" />
             <span className="font-body text-sm font-medium">Đăng xuất</span>
           </button>
@@ -1034,7 +1197,7 @@ const AdminDashboard = () => {
                               {rec.is_important && <Star className="w-3 h-3 fill-current inline mr-1" />}
                               {format(new Date(rec.created_at), 'HH:mm')}
                             </span>
-                            <span className="text-xs text-on-surface-variant">{format(new Date(rec.created_at), 'dd/MM/yyyy HH:mm')}</span>
+                            <span className="text-xs text-on-surface-variant">{format(new Date(rec.created_at), 'dd/MM/yyyy')}</span>
                           </div>
                           <h4 className="font-headline font-bold text-on-surface truncate">{rec.title}</h4>
                           <div className="flex items-center gap-3 mt-2">
@@ -1058,23 +1221,43 @@ const AdminDashboard = () => {
                               <Play className="w-6 h-6 fill-current" />
                             </button>
                             <div>
-                              <h2 className="text-xl font-headline font-extrabold text-on-surface">{selectedRecording.title}</h2>
+                              <div className="flex items-center gap-2">
+                                <h2 className="text-xl font-headline font-extrabold text-on-surface">{selectedRecording.title}</h2>
+                                <button 
+                                  onClick={() => {
+                                    setItemToEdit(selectedRecording.id);
+                                    setEditTitleValue(selectedRecording.title);
+                                    setIsRenameModalOpen(true);
+                                  }}
+                                  className="p-1.5 hover:bg-surface-container-high rounded-lg text-on-surface-variant transition-colors"
+                                  title="Đổi tên"
+                                >
+                                  <Edit3 className="w-4 h-4" />
+                                </button>
+                              </div>
                               <p className="text-sm text-on-surface-variant">
                                 {format(new Date(selectedRecording.created_at), 'dd/MM/yyyy HH:mm')} • {formatDuration(selectedRecording.duration)}
                               </p>
                             </div>
                           </div>
                           <div className="flex gap-2">
+                            <button 
+                              onClick={() => exportToWord(selectedRecording.title, selectedRecording.transcript)}
+                              className="p-2 text-on-surface-variant hover:text-primary transition-colors"
+                              title="Xuất Word"
+                            >
+                              <FileText className="w-5 h-5" />
+                            </button>
                             <button onClick={() => toggleImportant(selectedRecording.id, selectedRecording.is_important)} className={cn("p-2 transition-colors", selectedRecording.is_important ? "text-yellow-500" : "text-on-surface-variant hover:text-yellow-500")}>
                               <Star className={cn("w-5 h-5", selectedRecording.is_important && "fill-current")} />
                             </button>
-                            <button onClick={() => renameRecording(selectedRecording.id, selectedRecording.title)} className="p-2 text-on-surface-variant hover:text-primary transition-colors">
-                              <Edit2 className="w-5 h-5" />
-                            </button>
-                            <button onClick={() => exportToWord(selectedRecording)} className="p-2 text-on-surface-variant hover:text-primary transition-colors" title="Export to Word">
-                              <FileText className="w-5 h-5" />
-                            </button>
-                            <button onClick={() => deleteRecording(selectedRecording.id)} className="p-2 text-on-surface-variant hover:text-error transition-colors">
+                            <button 
+                              onClick={() => {
+                                setItemToDelete(selectedRecording);
+                                setIsDeleteModalOpen(true);
+                              }} 
+                              className="p-2 text-on-surface-variant hover:text-error transition-colors"
+                            >
                               <Trash2 className="w-5 h-5" />
                             </button>
                           </div>
@@ -1204,12 +1387,109 @@ const AdminDashboard = () => {
           )}
         </div>
       </main>
+
+      {/* Custom Modals for Admin */}
+      <AnimatePresence>
+        {isRenameModalOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm px-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="bg-surface p-8 rounded-2xl shadow-2xl w-full max-w-md border border-surface-container-low"
+            >
+              <h3 className="text-2xl font-black mb-6 font-headline tracking-tighter text-on-surface">Rename Recording</h3>
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-bold text-on-surface-variant mb-2 uppercase tracking-widest">New Title</label>
+                  <input 
+                    type="text" 
+                    value={editTitleValue}
+                    onChange={(e) => {
+                      setEditTitleValue(e.target.value);
+                      if (renameError) setRenameError("");
+                    }}
+                    className={cn(
+                      "w-full bg-surface-container-low border rounded-xl px-4 py-3 focus:outline-none focus:ring-2 transition-all text-on-surface",
+                      renameError ? "border-error focus:ring-error" : "border-surface-container-high focus:ring-primary"
+                    )}
+                    placeholder="Enter new title..."
+                  />
+                  {renameError && (
+                    <p className="mt-2 text-xs font-bold text-error uppercase tracking-wider animate-shake">
+                      {renameError}
+                    </p>
+                  )}
+                </div>
+                <div className="flex gap-3 pt-4">
+                  <button 
+                    onClick={() => setIsRenameModalOpen(false)}
+                    className="flex-1 px-6 py-3 rounded-xl font-bold text-on-surface-variant hover:bg-surface-container-high transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button 
+                    onClick={renameRecording}
+                    disabled={isActionLoading}
+                    className="flex-1 bg-primary text-white px-6 py-3 rounded-xl font-bold shadow-lg hover:shadow-primary/20 transition-all disabled:opacity-50"
+                  >
+                    {isActionLoading ? 'Renaming...' : 'Rename'}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {isDeleteModalOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm px-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="bg-surface p-8 rounded-2xl shadow-2xl w-full max-w-md border border-surface-container-low"
+            >
+              <div className="bg-error/10 w-16 h-16 rounded-full flex items-center justify-center mb-6 mx-auto">
+                <Trash2 className="text-error w-8 h-8" />
+              </div>
+              <h3 className="text-2xl font-black mb-2 font-headline tracking-tighter text-on-surface text-center">Delete Recording?</h3>
+              <p className="text-on-surface-variant text-center mb-8">
+                Hành động này không thể hoàn tác. Bản ghi và file âm thanh sẽ bị xóa vĩnh viễn khỏi hệ thống.
+              </p>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setIsDeleteModalOpen(false)}
+                  className="flex-1 px-6 py-3 rounded-xl font-bold text-on-surface-variant hover:bg-surface-container-high transition-colors"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={deleteRecording}
+                  disabled={isActionLoading}
+                  className="flex-1 bg-error text-white px-6 py-3 rounded-xl font-bold shadow-lg hover:shadow-error/20 transition-all disabled:opacity-50"
+                >
+                  {isActionLoading ? 'Deleting...' : 'Delete Forever'}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
 
 export default function App() {
-  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(() => {
+    return localStorage.getItem("isAdminAuthenticated") === "true";
+  });
+
+  const handleAdminLogin = (remember: boolean) => {
+    setIsAdminAuthenticated(true);
+    if (remember) {
+      localStorage.setItem("isAdminAuthenticated", "true");
+    }
+  };
 
   return (
     <Router>
@@ -1223,7 +1503,7 @@ export default function App() {
               isAdminAuthenticated ? (
                 <AdminDashboard />
               ) : (
-                <AdminLogin onLogin={() => setIsAdminAuthenticated(true)} />
+                <AdminLogin onLogin={handleAdminLogin} />
               )
             } 
           />
@@ -1231,12 +1511,9 @@ export default function App() {
         
         <footer className="bg-surface w-full py-12 mt-auto border-t border-surface-container-low">
           <div className="flex flex-col items-center justify-center gap-4 w-full">
-            <p className="font-body text-xs text-on-surface-variant">© 2026 Sonic Lens. Built for focused thought.</p>
-            <div className="flex gap-6">
-              <span className="text-on-surface-variant hover:text-primary transition-colors text-xs font-medium cursor-pointer">Privacy Policy</span>
-              <span className="text-on-surface-variant hover:text-primary transition-colors text-xs font-medium cursor-pointer">Terms of Service</span>
-              <span className="text-on-surface-variant hover:text-primary transition-colors text-xs font-medium cursor-pointer">Documentation</span>
-            </div>
+            <p className="font-body text-xs text-on-surface-variant">
+              © 2026 Sonic Lens. Developement for <a href="https://nhduy1703.vercel.app/" target="_blank" rel="noopener noreferrer" className="font-bold text-primary hover:opacity-80 transition-opacity">Nguyễn Hoàng Duy</a>
+            </p>
           </div>
         </footer>
       </div>
