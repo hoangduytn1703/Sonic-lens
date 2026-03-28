@@ -431,7 +431,14 @@ const Dashboard = () => {
     fullSummaryRef.current = "";
     setFullTranscript([]);
     setCurrentTranscript("Đang tải file và phân tích nội dung...");
-    setDuration(0);
+    
+    // Get duration of uploaded file
+    const audio = new Audio();
+    audio.src = URL.createObjectURL(file);
+    audio.onloadedmetadata = () => {
+      setDuration(Math.round(audio.duration));
+      setLastAudioUrl(audio.src);
+    };
 
     try {
       const reader = new FileReader();
