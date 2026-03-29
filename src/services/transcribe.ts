@@ -112,7 +112,7 @@ async function whisperSTT(base64Audio: string, mimeType: string): Promise<{ text
 
 // ──────────────────────────────────────────────
 // GEMINI TEXT-ONLY STRUCTURING (no audio, saves ~80% tokens)
-// Uses gemini-2.0-flash for text structuring only
+// Uses gemini-2.5-flash for text structuring only (20 RPD free tier)
 // ──────────────────────────────────────────────
 async function structureWithGemini(rawText: string): Promise<any> {
   if (!process.env.GEMINI_API_KEY) {
@@ -143,7 +143,7 @@ NOI DUNG CAN PHAN TICH:
 ${rawText}`;
 
   const response = await ai.models.generateContent({
-    model: "gemini-2.0-flash",
+    model: "gemini-2.5-flash",
     contents: [{ parts: [{ text: prompt }] }],
     config: { responseMimeType: "application/json" }
   });
@@ -477,7 +477,7 @@ export function resetProviderBlacklist() {
 
 // ──────────────────────────────────────────────
 // MAIN ENTRY POINT
-// Multi-model ON  -> Hybrid pipeline (Whisper STT -> Gemini text)
+// Multi-model ON  -> Priority 1: Gemini Native (Best quality) -> Fallback: Hybrid (Whisper + Gemini Text)
 // Multi-model OFF -> Single provider (standalone, sends audio directly)
 // ──────────────────────────────────────────────
 export const transcribeAudio = async (base64Audio: string, mimeType: string) => {
@@ -490,30 +490,49 @@ export const transcribeAudio = async (base64Audio: string, mimeType: string) => 
     return { ...result, _usedProvider: config.provider };
   }
 
-  // ── Multi model mode: use HYBRID pipeline ──
-  console.log('[Sonic Lens] Multi-model mode: using HYBRID pipeline (Whisper STT -> Gemini text)');
+  // ── Multi model mode: Priority Logic ──
+  console.log('[Sonic Lens] Multi-model mode: starting priority chain...');
 
+  // Step 1: Try Gemini Native first (Best quality, uses more tokens)
+  if (process.env.GEMINI_API_KEY && !disabledProviders.has('gemini')) {
+    try {
+      console.log('[Sonic Lens] Priority 1: Trying Gemini Native Audio...');
+      const result = await transcribeWithGemini(base64Audio, mimeType);
+      return { ...result, _usedProvider: 'gemini-native' };
+    } catch (err: any) {
+      const errorMsg = err?.message || '';
+      console.warn('[Sonic Lens] Gemini Native failed:', errorMsg);
+      if (shouldDisableProvider(errorMsg)) {
+        disabledProviders.add('gemini');
+        console.warn('[Sonic Lens] Gemini (Native) BLACKLISTED for this session.');
+      }
+      // Continue to hybrid fallback
+    }
+  }
+
+  // Step 2: Try Hybrid Pipeline (Whisper STT + Gemini/LLM Text structuring)
   try {
+    console.log('[Sonic Lens] Priority 2: Trying HYBRID pipeline (Whisper STT + Text Structuring)...');
     const result = await transcribeHybrid(base64Audio, mimeType);
-    return result; // _usedProvider already set inside transcribeHybrid
+    return result; // _usedProvider set inside transcribeHybrid
   } catch (err: any) {
-    console.warn('[Sonic Lens] Hybrid pipeline failed, falling back to standalone providers...');
+    console.warn('[Sonic Lens] Hybrid pipeline failed, falling back to other standalone providers...');
 
-    // Fallback: try standalone providers in priority order
+    // Step 3: Final fallback to other standalone providers in priority order
     const availableProviders = PROVIDER_PRIORITY.filter(p =>
-      isProviderAvailable(p, config) && !disabledProviders.has(p)
+      p !== 'gemini' && isProviderAvailable(p, config) && !disabledProviders.has(p)
     );
 
     if (availableProviders.length === 0) {
       if (disabledProviders.size > 0) {
-        console.log('[Sonic Lens] All providers blacklisted. Resetting and retrying...');
+        console.log('[Sonic Lens] All providers failed/blacklisted. Resetting and retrying 1 last time...');
         disabledProviders.clear();
         const retryProviders = PROVIDER_PRIORITY.filter(p => isProviderAvailable(p, config));
         if (retryProviders.length > 0) {
           return transcribeWithStandaloneFallback(retryProviders, base64Audio, mimeType);
         }
       }
-      throw new Error('No AI providers available. Please configure at least one API key in Admin > API Settings.');
+      throw new Error('No AI providers available. Check API keys in Admin.');
     }
 
     return transcribeWithStandaloneFallback(availableProviders, base64Audio, mimeType);
