@@ -1,0 +1,20 @@
+name: Supabase Keep Alive
+
+on:
+  schedule:
+    # Chạy vào 00:00 ngày 1 và ngày 4 hàng tuần (đảm bảo < 7 ngày)
+    - cron: '0 0 */3 * *'
+  workflow_dispatch: # Cho phép bấm chạy thủ công để test
+
+jobs:
+  ping_supabase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase Database
+        run: |
+          curl -X POST "${{ secrets.SUPABASE_URL }}/rest/v1/recordings?select=id&limit=1" \
+          -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+          -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
+          -H "Content-Type: application/json"
+        # Lệnh này chỉ đơn giản là lấy ID của 1 bản ghi bất kỳ trong bảng recordings
+        # giúp database phát sinh hoạt động (read activity).
