@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
-import { Mic, Settings, User, Play, Square, Pause, Trash2, Star, ChevronRight, LogOut, LayoutDashboard, ShieldCheck, Download, Share2, Search, MoreVertical, Upload, Edit3, FileText, Save, RotateCcw, Key, ExternalLink, Eye, EyeOff, CheckCircle2 } from 'lucide-react';
+import { Mic, Settings, User, Play, Square, Pause, Trash2, Star, ChevronRight, LogOut, LayoutDashboard, ShieldCheck, Download, Share2, Search, MoreVertical, Upload, Edit3, FileText, Save, RotateCcw, Key, ExternalLink, Eye, EyeOff, CheckCircle2, AlertCircle, Lock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
 import { Document, Packer, Paragraph, TextRun } from 'docx';
@@ -8,6 +8,7 @@ import { saveAs } from 'file-saver';
 import { cn, formatDuration } from './lib/utils';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import { transcribeAudio } from './services/transcribe';
+import { resetProviderBlacklist } from './services/transcribe';
 import { Recording, TranscriptItem } from './types';
 import { getAIConfig, saveAIConfig, isProviderAvailable, PROVIDER_PRIORITY, type AIProvider, OPENAI_API_KEYS_URL, GEMINI_API_KEYS_URL, GROQ_API_KEYS_URL, CLAUDE_API_KEYS_URL } from './lib/aiConfig';
 
@@ -77,6 +78,18 @@ const Dashboard = () => {
   const fullSummaryRef = useRef<string>("");
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const autoChunkTimerRef = useRef<any>(null);
+  const isAutoChunkingRef = useRef(false);
+  const lastUsedProviderRef = useRef<string | null>(null);
+
+  // UI-only model indicators: maps transcript index to provider name
+  // These are NOT saved to DB or exported
+  const [modelIndicators, setModelIndicators] = useState<Map<number, string>>(new Map());
+
+  // Auto-chunk interval in milliseconds (2 minutes - keeps WAV under 15MB)
+  const AUTO_CHUNK_INTERVAL = 2 * 60 * 1000;
+  // Max chunk duration in seconds for file splitting
+  const MAX_CHUNK_SECONDS = 2 * 60;
 
   // Effect to handle state when processing is done
   useEffect(() => {
@@ -235,8 +248,11 @@ const Dashboard = () => {
       allBlobsRef.current = [];
       setFinalAudioBlob(null);
       isWaitingForFinalBlobRef.current = false;
+      isAutoChunkingRef.current = false;
       fullSummaryRef.current = "";
       setFullTranscript([]);
+      setModelIndicators(new Map());
+      lastUsedProviderRef.current = null;
       setProcessingCount(0);
       setSaveStatus('idle');
       setHasAutoShownModal(false);
@@ -250,10 +266,44 @@ const Dashboard = () => {
       setDuration(0);
       setCurrentTranscript("");
       setLastAudioUrl(null);
+
+      // Start auto-chunk timer: every 5 minutes, stop current recorder
+      // and start a new one to process the chunk
+      startAutoChunkTimer(recorder);
     } catch (err) {
       console.error("Error accessing microphone:", err);
-      alert("Không thể truy cập microphone. Vui lòng kiểm tra quyền truy cập.");
+      alert("Khong the truy cap microphone. Vui long kiem tra quyen truy cap.");
     }
+  };
+
+  const startAutoChunkTimer = (initialRecorder?: MediaRecorder) => {
+    clearAutoChunkTimer();
+    autoChunkTimerRef.current = setInterval(() => {
+      autoChunkSegment();
+    }, AUTO_CHUNK_INTERVAL);
+    console.log(`[Auto-Chunk] Timer started: every ${AUTO_CHUNK_INTERVAL / 1000}s`);
+  };
+
+  const clearAutoChunkTimer = () => {
+    if (autoChunkTimerRef.current) {
+      clearInterval(autoChunkTimerRef.current);
+      autoChunkTimerRef.current = null;
+    }
+  };
+
+  // Auto-chunk: stop current recorder to flush audio, then immediately start a new segment
+  const autoChunkSegment = () => {
+    // Access the latest mediaRecorder from DOM state via a workaround
+    // We set a flag so setupRecorder knows to auto-restart
+    isAutoChunkingRef.current = true;
+    // We need to get current recorder - use a callback pattern
+    setMediaRecorder(prev => {
+      if (prev && prev.state === 'recording') {
+        console.log('[Auto-Chunk] Stopping current segment for processing...');
+        prev.stop(); // This triggers onstop -> handleSegmentTranscription + auto-restart
+      }
+      return prev;
+    });
   };
 
   const finalizeRecording = async () => {
@@ -374,11 +424,24 @@ const Dashboard = () => {
     recorder.onstop = async () => {
       const audioBlob = new Blob(chunks, { type: 'audio/webm' });
       allBlobsRef.current.push(audioBlob);
-      console.log(`Đã thu thập đoạn âm thanh thứ ${allBlobsRef.current.length}`);
+      console.log(`[Recorder] Collected segment #${allBlobsRef.current.length} (${(audioBlob.size / 1024 / 1024).toFixed(2)} MB)`);
       
       handleSegmentTranscription(audioBlob);
 
-      // Nếu đây là đoạn cuối cùng (được kích hoạt từ stopRecording)
+      // If this was an auto-chunk (not pause or stop), restart recording immediately
+      if (isAutoChunkingRef.current) {
+        isAutoChunkingRef.current = false;
+        if (streamRef.current) {
+          console.log('[Auto-Chunk] Starting new segment...');
+          const newRecorder = new MediaRecorder(streamRef.current);
+          setupRecorder(newRecorder);
+          newRecorder.start();
+          setMediaRecorder(newRecorder);
+        }
+        return;
+      }
+
+      // If this is the final segment (triggered from stopRecording)
       if (isWaitingForFinalBlobRef.current) {
         await finalizeRecording();
       }
@@ -388,26 +451,33 @@ const Dashboard = () => {
   const handleSegmentTranscription = async (blob: Blob) => {
     setProcessingCount(prev => prev + 1);
     try {
-      const reader = new FileReader();
-      reader.readAsDataURL(blob);
-      reader.onloadend = async () => {
-        const base64Audio = (reader.result as string).split(',')[1];
-        try {
-          const result = await transcribeAudio(base64Audio, blob.type);
-          
-          setFullTranscript(prev => [...prev, ...result.transcript]);
-          if (result.summary) {
-            fullSummaryRef.current = fullSummaryRef.current ? fullSummaryRef.current + " " + result.summary : result.summary;
-          }
-        } catch (err: any) {
-          console.error("Transcription error:", err);
-          setCurrentTranscript(prev => prev + `\n\n[Lỗi AI: ${err.message}]`);
-        } finally {
-          setProcessingCount(prev => Math.max(0, prev - 1));
-        }
-      };
-    } catch (err) {
-      console.error("Error processing segment:", err);
+      const base64Audio = await blobToBase64(blob);
+      const result = await transcribeAudio(base64Audio, blob.type);
+      
+      // Track model changes for UI indicator
+      const usedProvider = result._usedProvider as string | undefined;
+      if (usedProvider && usedProvider !== lastUsedProviderRef.current) {
+        setFullTranscript(prev => {
+          const insertIndex = prev.length;
+          setModelIndicators(indicators => {
+            const newMap = new Map(indicators);
+            newMap.set(insertIndex, usedProvider);
+            return newMap;
+          });
+          return [...prev, ...result.transcript];
+        });
+        lastUsedProviderRef.current = usedProvider;
+      } else {
+        setFullTranscript(prev => [...prev, ...result.transcript]);
+      }
+
+      if (result.summary) {
+        fullSummaryRef.current = fullSummaryRef.current ? fullSummaryRef.current + " " + result.summary : result.summary;
+      }
+    } catch (err: any) {
+      console.error("Transcription error:", err);
+      setCurrentTranscript(prev => prev + `\n\n[Loi AI: ${err.message}]`);
+    } finally {
       setProcessingCount(prev => Math.max(0, prev - 1));
     }
   };
@@ -416,12 +486,12 @@ const Dashboard = () => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Hỗ trợ .mp4, .m4a, .mp3, .wav, .mpeg
+    // Support .mp4, .m4a, .mp3, .wav, .mpeg
     const isAudio = file.type.startsWith('audio/');
     const isVideo = file.type.startsWith('video/') || file.name.endsWith('.mp4') || file.name.endsWith('.m4a');
     
     if (!isAudio && !isVideo) {
-      alert("Vui lòng chọn file âm thanh hoặc video (.mp3, .wav, .m4a, .mp4, ...)");
+      alert("Vui long chon file am thanh hoac video (.mp3, .wav, .m4a, .mp4, ...)");
       return;
     }
 
@@ -431,49 +501,171 @@ const Dashboard = () => {
     setFinalAudioBlob(file);
     fullSummaryRef.current = "";
     setFullTranscript([]);
-    setCurrentTranscript("Đang tải file và phân tích nội dung...");
+    setModelIndicators(new Map());
+    lastUsedProviderRef.current = null;
+
+    // Reset provider blacklist for fresh import
+    resetProviderBlacklist();
     
     // Get duration of uploaded file
-    const audio = new Audio();
-    audio.src = URL.createObjectURL(file);
-    audio.onloadedmetadata = () => {
-      setDuration(Math.round(audio.duration));
-      setLastAudioUrl(audio.src);
-    };
+    const audioDuration = await getAudioDuration(file);
+    setDuration(Math.round(audioDuration));
+    const audioUrl = URL.createObjectURL(file);
+    setLastAudioUrl(audioUrl);
 
-    try {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onloadend = async () => {
-        const base64Audio = (reader.result as string).split(',')[1];
-        try {
-          const result = await transcribeAudio(base64Audio, file.type || 'audio/mp4');
-          
-          setFullTranscript(result.transcript);
-          fullSummaryRef.current = result.summary;
-          setIsFinalizing(false);
-          setCurrentTranscript("");
-          
-          // Show naming modal for imported files too
-          setNewRecordingTitle(file.name.split('.')[0] || `Imported ${format(new Date(), 'yyyy-MM-dd HH:mm')}`);
-          setIsNamingModalOpen(true);
-          setHasAutoShownModal(true);
-          setShouldSave(true);
-          console.log("Import file thành công. Đang chờ người dùng đặt tên để lưu.");
-        } catch (err: any) {
-          console.error("Transcription error:", err);
-          setCurrentTranscript(`[Lỗi AI: ${err.message}]`);
-          setIsFinalizing(false);
+    const totalChunks = Math.ceil(audioDuration / MAX_CHUNK_SECONDS);
+    const isLongFile = audioDuration > MAX_CHUNK_SECONDS;
+
+    if (isLongFile) {
+      // ── CHUNKED PROCESSING for long files ──
+      setCurrentTranscript(`File dai ${Math.round(audioDuration / 60)} phut. Dang chia thanh ${totalChunks} doan de xu ly...`);
+      console.log(`[Chunked Import] File duration: ${Math.round(audioDuration)}s, splitting into ${totalChunks} chunks of ${MAX_CHUNK_SECONDS}s`);
+
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const fullBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+        const sampleRate = fullBuffer.sampleRate;
+        const numChannels = fullBuffer.numberOfChannels;
+        const samplesPerChunk = MAX_CHUNK_SECONDS * sampleRate;
+
+        let allTranscripts: TranscriptItem[] = [];
+        let allSummaries: string[] = [];
+
+        for (let i = 0; i < totalChunks; i++) {
+          const startSample = i * samplesPerChunk;
+          const endSample = Math.min(startSample + samplesPerChunk, fullBuffer.length);
+          const chunkLength = endSample - startSample;
+
+          setCurrentTranscript(`Dang xu ly doan ${i + 1}/${totalChunks} (phut ${Math.round(startSample / sampleRate / 60)}-${Math.round(endSample / sampleRate / 60)})...`);
+
+          // Extract chunk from full buffer
+          const chunkBuffer = audioCtx.createBuffer(numChannels, chunkLength, sampleRate);
+          for (let ch = 0; ch < numChannels; ch++) {
+            const fullData = fullBuffer.getChannelData(ch);
+            const chunkData = chunkBuffer.getChannelData(ch);
+            for (let s = 0; s < chunkLength; s++) {
+              chunkData[s] = fullData[startSample + s];
+            }
+          }
+
+          // Convert chunk to WAV blob
+          const wavBlob = bufferToWav(chunkBuffer);
+          console.log(`[Chunked Import] Chunk ${i + 1}/${totalChunks}: ${(wavBlob.size / 1024 / 1024).toFixed(2)} MB`);
+
+          // Read as base64 and transcribe
+          try {
+            const base64 = await blobToBase64(wavBlob);
+            const result = await transcribeAudio(base64, 'audio/wav');
+
+            // Adjust timestamps to be relative to the full file
+            const offsetMinutes = Math.floor((startSample / sampleRate) / 60);
+            const offsetSeconds = Math.round((startSample / sampleRate) % 60);
+            const adjustedTranscript = result.transcript.map((item: TranscriptItem) => {
+              // Parse existing timestamp and add offset
+              const [mins, secs] = (item.timestamp || '00:00').split(':').map(Number);
+              const totalSecs = (mins + offsetMinutes) * 60 + (secs + offsetSeconds);
+              const newMins = Math.floor(totalSecs / 60);
+              const newSecs = totalSecs % 60;
+              return {
+                ...item,
+                timestamp: `${String(newMins).padStart(2, '0')}:${String(newSecs).padStart(2, '0')}`
+              };
+            });
+
+            allTranscripts = [...allTranscripts, ...adjustedTranscript];
+            if (result.summary) allSummaries.push(result.summary);
+
+            // Track model changes for UI indicator
+            const usedProvider = result._usedProvider as string | undefined;
+            if (usedProvider && usedProvider !== lastUsedProviderRef.current) {
+              setModelIndicators(indicators => {
+                const newMap = new Map(indicators);
+                newMap.set(allTranscripts.length - adjustedTranscript.length, usedProvider);
+                return newMap;
+              });
+              lastUsedProviderRef.current = usedProvider;
+            }
+
+            // Update UI progressively
+            setFullTranscript([...allTranscripts]);
+            fullSummaryRef.current = allSummaries.join(' ');
+          } catch (err: any) {
+            // Silently log error - do NOT add to transcript
+            console.warn(`[Chunked Import] Chunk ${i + 1} failed (silently skipped):`, err.message);
+          }
         }
-      };
-    } catch (err) {
-      console.error("Error processing file:", err);
-      setIsFinalizing(false);
+
+        audioCtx.close();
+        setIsFinalizing(false);
+        setCurrentTranscript("");
+        
+        // Show naming modal
+        setNewRecordingTitle(file.name.split('.')[0] || `Imported ${format(new Date(), 'yyyy-MM-dd HH:mm')}`);
+        setIsNamingModalOpen(true);
+        setHasAutoShownModal(true);
+        setShouldSave(true);
+        console.log(`[Chunked Import] Complete! ${totalChunks} chunks processed, ${allTranscripts.length} transcript items.`);
+      } catch (err: any) {
+        console.error("[Chunked Import] Error:", err);
+        setCurrentTranscript(`[Loi xu ly file: ${err.message}]`);
+        setIsFinalizing(false);
+      }
+    } else {
+      // ── DIRECT PROCESSING for short files (< 5 min) ──
+      setCurrentTranscript("Dang tai file va phan tich noi dung...");
+      try {
+        const base64Audio = await blobToBase64(file);
+        const result = await transcribeAudio(base64Audio, file.type || 'audio/mp4');
+        
+        setFullTranscript(result.transcript);
+        fullSummaryRef.current = result.summary;
+        setIsFinalizing(false);
+        setCurrentTranscript("");
+        
+        setNewRecordingTitle(file.name.split('.')[0] || `Imported ${format(new Date(), 'yyyy-MM-dd HH:mm')}`);
+        setIsNamingModalOpen(true);
+        setHasAutoShownModal(true);
+        setShouldSave(true);
+        console.log("Import file completed. Waiting for user to name and save.");
+      } catch (err: any) {
+        console.error("Transcription error:", err);
+        setCurrentTranscript(`[Loi AI: ${err.message}]`);
+        setIsFinalizing(false);
+      }
     }
+  };
+
+  // Helper: get audio duration from file
+  const getAudioDuration = (file: File): Promise<number> => {
+    return new Promise((resolve) => {
+      const audio = new Audio();
+      audio.src = URL.createObjectURL(file);
+      audio.onloadedmetadata = () => {
+        resolve(audio.duration);
+        URL.revokeObjectURL(audio.src);
+      };
+      audio.onerror = () => resolve(0);
+    });
+  };
+
+  // Helper: convert Blob to base64 string (without data URL prefix)
+  const blobToBase64 = (blob: Blob): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(blob);
+      reader.onloadend = () => {
+        const base64 = (reader.result as string).split(',')[1];
+        resolve(base64);
+      };
+      reader.onerror = reject;
+    });
   };
 
   const pauseRecording = () => {
     if (mediaRecorder && isRecording && !isPaused) {
+      clearAutoChunkTimer();
       setIsPaused(true);
       mediaRecorder.stop(); 
     }
@@ -483,6 +675,7 @@ const Dashboard = () => {
     if (isRecording && isPaused) {
       setIsPaused(false);
       startNewSegment();
+      startAutoChunkTimer();
     }
   };
 
@@ -500,6 +693,7 @@ const Dashboard = () => {
 
   const stopRecording = async () => {
     if (mediaRecorder && isRecording) {
+      clearAutoChunkTimer();
       const currentRecorder = mediaRecorder;
       
       setIsRecording(false);
@@ -514,7 +708,7 @@ const Dashboard = () => {
         isWaitingForFinalBlobRef.current = true;
         currentRecorder.stop();
       } else {
-        // Nếu recorder đã dừng (đang ở trạng thái pause), ta có thể finalize luôn
+        // Recorder already stopped (paused state), finalize directly
         finalizeRecording();
       }
     }
@@ -619,7 +813,7 @@ const Dashboard = () => {
               )}></div>
               <button 
                 onClick={isRecording ? stopRecording : startRecording}
-                disabled={(isProcessing && !isRecording) || (isPaused && isProcessing)}
+                disabled={isProcessing}
                 className={cn(
                   "relative w-24 h-24 rounded-full flex items-center justify-center text-white shadow-2xl transition-all active:scale-90 hover:scale-105 group disabled:opacity-50",
                   isRecording ? "bg-error" : "bg-gradient-to-br from-primary to-secondary"
@@ -632,7 +826,7 @@ const Dashboard = () => {
             {isRecording && (
               <button 
                 onClick={isPaused ? resumeRecording : pauseRecording}
-                disabled={isPaused && isProcessing}
+                disabled={isProcessing}
                 className={cn(
                   "w-16 h-16 rounded-full flex items-center justify-center shadow-xl transition-all active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed",
                   isPaused ? "bg-primary text-white" : "bg-surface-container-high text-on-surface"
@@ -766,7 +960,26 @@ const Dashboard = () => {
             {fullTranscript.length > 0 ? (
               <div className="space-y-6">
                 {fullTranscript.map((item, idx) => (
-                  <div key={idx} className="flex flex-col gap-1.5 group">
+                  <React.Fragment key={idx}>
+                    {/* Model indicator badge - UI only */}
+                    {modelIndicators.has(idx) && (
+                      <div className="flex items-center gap-2 py-2">
+                        <div className="flex-1 h-px bg-outline-variant/15"></div>
+                        <span className={cn(
+                          "text-[9px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider flex items-center gap-1.5 border",
+                          modelIndicators.get(idx) === 'gemini' ? "bg-primary/5 text-primary border-primary/20" :
+                          modelIndicators.get(idx) === 'groq' ? "bg-[#f55036]/5 text-[#f55036] border-[#f55036]/20" :
+                          modelIndicators.get(idx) === 'openai' ? "bg-[#10a37f]/5 text-[#10a37f] border-[#10a37f]/20" :
+                          modelIndicators.get(idx) === 'claude' ? "bg-[#d97706]/5 text-[#d97706] border-[#d97706]/20" :
+                          "bg-surface-container text-on-surface-variant border-outline-variant/20"
+                        )}>
+                          <span className="w-1.5 h-1.5 rounded-full bg-current"></span>
+                          {modelIndicators.get(idx)}
+                        </span>
+                        <div className="flex-1 h-px bg-outline-variant/15"></div>
+                      </div>
+                    )}
+                    <div className="flex flex-col gap-1.5 group">
                     <div className="flex items-center gap-3">
                       <div className={cn(
                         "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
@@ -789,6 +1002,7 @@ const Dashboard = () => {
                       )}
                     </p>
                   </div>
+                  </React.Fragment>
                 ))}
               </div>
             ) : currentTranscript ? (
@@ -1962,10 +2176,164 @@ const AdminDashboard = () => {
   );
 };
 
+// ──────────────────────────────────────────────
+// APP LOGIN GATE
+// Hardcoded credentials - wraps entire app
+// ──────────────────────────────────────────────
+const APP_CREDENTIALS = { username: 'nganttt', password: 'Nganxinhdep' };
+const APP_AUTH_KEY = 'sonic_lens_authenticated';
+
+const AppLoginPage = ({ onLogin }: { onLogin: (remember: boolean) => void }) => {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [remember, setRemember] = useState(false);
+  const [error, setError] = useState('');
+  const [isShaking, setIsShaking] = useState(false);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (username === APP_CREDENTIALS.username && password === APP_CREDENTIALS.password) {
+      onLogin(remember);
+    } else {
+      setError('Sai tai khoan hoac mat khau!');
+      setIsShaking(true);
+      setTimeout(() => setIsShaking(false), 500);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-surface flex items-center justify-center px-4">
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-primary/5 rounded-full blur-3xl"></div>
+        <div className="absolute bottom-1/4 right-1/4 w-80 h-80 bg-secondary/5 rounded-full blur-3xl"></div>
+      </div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 30 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6, ease: "easeOut" }}
+        className={cn(
+          "relative w-full max-w-md bg-surface-container-lowest rounded-2xl shadow-2xl border border-outline-variant/10 p-8",
+          isShaking && "animate-shake"
+        )}
+      >
+        {/* Logo */}
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-primary to-secondary mb-4">
+            <Mic className="w-8 h-8 text-white" />
+          </div>
+          <h1 className="font-headline font-extrabold text-3xl tracking-tight text-on-surface">Sonic Lens</h1>
+          <p className="text-sm text-on-surface-variant mt-1">Dang nhap de tiep tuc</p>
+        </div>
+
+        {/* Error */}
+        <AnimatePresence>
+          {error && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className="mb-4 bg-error/10 border border-error/20 rounded-xl px-4 py-3 flex items-center gap-2"
+            >
+              <AlertCircle className="w-4 h-4 text-error shrink-0" />
+              <span className="text-sm text-error font-medium">{error}</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} className="space-y-5">
+          <div>
+            <label htmlFor="login-username" className="block text-sm font-bold text-on-surface-variant mb-2">
+              Tai khoan
+            </label>
+            <div className="relative">
+              <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-on-surface-variant" />
+              <input
+                id="login-username"
+                type="text"
+                value={username}
+                onChange={(e) => { setUsername(e.target.value); setError(''); }}
+                placeholder="Nhap tai khoan"
+                autoComplete="username"
+                className="w-full bg-surface-container-low border border-surface-container-high rounded-xl pl-10 pr-4 py-3 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary transition-all"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label htmlFor="login-password" className="block text-sm font-bold text-on-surface-variant mb-2">
+              Mat khau
+            </label>
+            <div className="relative">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-on-surface-variant" />
+              <input
+                id="login-password"
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); setError(''); }}
+                placeholder="Nhap mat khau"
+                autoComplete="current-password"
+                className="w-full bg-surface-container-low border border-surface-container-high rounded-xl pl-10 pr-12 py-3 text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary transition-all"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface transition-colors"
+              >
+                {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setRemember(!remember)}
+              className={cn(
+                "w-5 h-5 rounded border-2 flex items-center justify-center transition-all",
+                remember ? "bg-primary border-primary" : "border-surface-container-highest"
+              )}
+            >
+              {remember && <CheckCircle2 className="w-3 h-3 text-white" />}
+            </button>
+            <span className="text-sm text-on-surface-variant select-none cursor-pointer" onClick={() => setRemember(!remember)}>
+              Ghi nho dang nhap
+            </span>
+          </div>
+
+          <button
+            type="submit"
+            className="w-full bg-gradient-to-r from-primary to-secondary text-white font-bold py-3 rounded-xl hover:opacity-90 active:scale-[0.98] transition-all shadow-lg"
+          >
+            Dang nhap
+          </button>
+        </form>
+
+        <p className="text-center text-xs text-on-surface-variant/50 mt-6">
+          Sonic Lens &bull; Private Access Only
+        </p>
+      </motion.div>
+    </div>
+  );
+};
+
 export default function App() {
+  const [isAppAuthenticated, setIsAppAuthenticated] = useState(() => {
+    return localStorage.getItem(APP_AUTH_KEY) === 'true';
+  });
+
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(() => {
     return localStorage.getItem("isAdminAuthenticated") === "true";
   });
+
+  const handleAppLogin = (remember: boolean) => {
+    setIsAppAuthenticated(true);
+    if (remember) {
+      localStorage.setItem(APP_AUTH_KEY, 'true');
+    }
+  };
 
   const handleAdminLogin = (remember: boolean) => {
     setIsAdminAuthenticated(true);
@@ -1973,6 +2341,11 @@ export default function App() {
       localStorage.setItem("isAdminAuthenticated", "true");
     }
   };
+
+  // Show login gate if not authenticated
+  if (!isAppAuthenticated) {
+    return <AppLoginPage onLogin={handleAppLogin} />;
+  }
 
   return (
     <Router>

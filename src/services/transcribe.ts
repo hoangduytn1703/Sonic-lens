@@ -269,9 +269,42 @@ async function runProvider(provider: AIProvider, base64Audio: string, mimeType: 
 }
 
 // ──────────────────────────────────────────────
+// PROVIDER BLACKLIST (session-level)
+// Tracks providers that hit rate limits, quota, or size errors.
+// Once blacklisted, they are skipped for the rest of the session.
+// Resets on page reload.
+// ──────────────────────────────────────────────
+const disabledProviders = new Set<AIProvider>();
+
+// Errors that indicate a provider should be disabled for this session
+const FATAL_ERROR_PATTERNS = [
+  '429',
+  'rate limit',
+  'quota',
+  'resource_exhausted',
+  'too large',
+  'request entity too large',
+  'payload too large',
+  'content-length',
+  'exceeded',
+];
+
+function shouldDisableProvider(errorMessage: string): boolean {
+  const lower = errorMessage.toLowerCase();
+  return FATAL_ERROR_PATTERNS.some(pattern => lower.includes(pattern));
+}
+
+// Public: reset blacklist (e.g. when user changes settings)
+export function resetProviderBlacklist() {
+  disabledProviders.clear();
+  console.log('[Sonic Lens] Provider blacklist cleared.');
+}
+
+// ──────────────────────────────────────────────
 // MAIN ENTRY POINT
 // Multi-model: tries providers in priority order, falls back on failure.
 // Single-model: uses the selected provider only.
+// Blacklisted providers are skipped silently.
 // ──────────────────────────────────────────────
 export const transcribeAudio = async (base64Audio: string, mimeType: string) => {
   const config = getAIConfig();
@@ -279,31 +312,57 @@ export const transcribeAudio = async (base64Audio: string, mimeType: string) => 
   // ── Single model mode ──
   if (!config.enableMultiModel) {
     console.log(`[Sonic Lens] Single model mode: using ${config.provider}`);
-    return runProvider(config.provider, base64Audio, mimeType);
+    const result = await runProvider(config.provider, base64Audio, mimeType);
+    return { ...result, _usedProvider: config.provider };
   }
 
   // ── Multi model mode ──
-  // Filter to only available providers (have valid keys configured)
-  const availableProviders = PROVIDER_PRIORITY.filter(p => isProviderAvailable(p, config));
+  // Filter: available + not blacklisted
+  const availableProviders = PROVIDER_PRIORITY.filter(p => 
+    isProviderAvailable(p, config) && !disabledProviders.has(p)
+  );
 
   if (availableProviders.length === 0) {
+    // If all are blacklisted, try resetting and retrying once
+    if (disabledProviders.size > 0) {
+      console.log('[Sonic Lens] All providers blacklisted. Resetting blacklist and retrying...');
+      disabledProviders.clear();
+      const retryProviders = PROVIDER_PRIORITY.filter(p => isProviderAvailable(p, config));
+      if (retryProviders.length > 0) {
+        return transcribeWithFallback(retryProviders, base64Audio, mimeType);
+      }
+    }
     throw new Error('No AI providers available. Please configure at least one API key in Admin > API Settings.');
   }
 
-  console.log(`[Sonic Lens] Multi-model mode enabled. Available providers: ${availableProviders.join(' -> ')}`);
+  if (disabledProviders.size > 0) {
+    console.log(`[Sonic Lens] Blacklisted providers: ${[...disabledProviders].join(', ')}`);
+  }
+  console.log(`[Sonic Lens] Active providers: ${availableProviders.join(' -> ')}`);
 
+  return transcribeWithFallback(availableProviders, base64Audio, mimeType);
+};
+
+// Internal: try providers in order with blacklist management
+async function transcribeWithFallback(providers: AIProvider[], base64Audio: string, mimeType: string) {
   const errors: string[] = [];
 
-  for (const provider of availableProviders) {
+  for (const provider of providers) {
     try {
       console.log(`[Sonic Lens] Trying provider: ${provider}...`);
       const result = await runProvider(provider, base64Audio, mimeType);
       console.log(`[Sonic Lens] Success with provider: ${provider}`);
-      return result;
+      return { ...result, _usedProvider: provider };
     } catch (err: any) {
       const errorMsg = err?.message || 'Unknown error';
       console.warn(`[Sonic Lens] Provider ${provider} failed: ${errorMsg}`);
       errors.push(`${provider}: ${errorMsg}`);
+
+      // Check if this is a fatal error (rate limit, quota, size limit)
+      if (shouldDisableProvider(errorMsg)) {
+        disabledProviders.add(provider);
+        console.warn(`[Sonic Lens] Provider ${provider} BLACKLISTED for this session (${errorMsg.substring(0, 60)}...)`);
+      }
       // Continue to next provider
     }
   }
@@ -312,4 +371,4 @@ export const transcribeAudio = async (base64Audio: string, mimeType: string) => 
   throw new Error(
     `All AI providers failed.\n\n${errors.map((e, i) => `${i + 1}. ${e}`).join('\n')}\n\nPlease check your API keys or try again later.`
   );
-};
+}
