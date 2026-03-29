@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
-import { Mic, Settings, User, Play, Square, Pause, Trash2, Star, ChevronRight, LogOut, LayoutDashboard, ShieldCheck, Download, Share2, Search, MoreVertical, Upload, Edit3, FileText, Save, RotateCcw } from 'lucide-react';
+import { Mic, Settings, User, Play, Square, Pause, Trash2, Star, ChevronRight, LogOut, LayoutDashboard, ShieldCheck, Download, Share2, Search, MoreVertical, Upload, Edit3, FileText, Save, RotateCcw, Key, ExternalLink, Eye, EyeOff, CheckCircle2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
 import { Document, Packer, Paragraph, TextRun } from 'docx';
 import { saveAs } from 'file-saver';
 import { cn, formatDuration } from './lib/utils';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
-import { transcribeAudio } from './services/gemini';
+import { transcribeAudio } from './services/transcribe';
 import { Recording, TranscriptItem } from './types';
+import { getAIConfig, saveAIConfig, isProviderAvailable, PROVIDER_PRIORITY, type AIProvider, OPENAI_API_KEYS_URL, GEMINI_API_KEYS_URL, GROQ_API_KEYS_URL, CLAUDE_API_KEYS_URL } from './lib/aiConfig';
 
 // --- Components ---
 
@@ -973,6 +974,17 @@ const AdminDashboard = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
+  // AI provider config state
+  const [aiProvider, setAIProvider] = useState<AIProvider>(() => getAIConfig().provider);
+  const [enableMultiModel, setEnableMultiModel] = useState<boolean>(() => getAIConfig().enableMultiModel);
+  const [openaiKey, setOpenaiKey] = useState<string>(() => getAIConfig().openaiApiKey);
+  const [showOpenaiKey, setShowOpenaiKey] = useState(false);
+  const [groqKey, setGroqKey] = useState<string>(() => getAIConfig().groqApiKey);
+  const [showGroqKey, setShowGroqKey] = useState(false);
+  const [claudeKey, setClaudeKey] = useState<string>(() => getAIConfig().claudeApiKey);
+  const [showClaudeKey, setShowClaudeKey] = useState(false);
+  const [apiSaveStatus, setApiSaveStatus] = useState<'idle' | 'saved'>('idle');
+
   useEffect(() => {
     fetchRecordings();
   }, []);
@@ -1419,53 +1431,430 @@ const AdminDashboard = () => {
             <>
               <header className="mb-10">
                 <h1 className="text-4xl font-black font-headline tracking-tight text-on-surface mb-2">Cài đặt API</h1>
-                <p className="text-on-surface-variant font-body">Cấu hình các dịch vụ AI và Cơ sở dữ liệu.</p>
+                <p className="text-on-surface-variant font-body">Cấu hình AI provider và các dịch vụ lưu trữ.</p>
               </header>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="space-y-8">
+                {/* AI Provider Card */}
                 <div className="bg-surface-container-lowest p-8 rounded-xl shadow-sm border border-outline-variant/10">
                   <div className="flex items-center gap-3 mb-6">
                     <div className="bg-primary-fixed p-2 rounded-lg">
-                      <ShieldCheck className="text-primary w-6 h-6" />
+                      <Key className="text-primary w-6 h-6" />
                     </div>
-                    <h3 className="font-headline font-bold text-xl">Google Gemini AI</h3>
-                  </div>
-                  <div className="space-y-4">
                     <div>
-                      <label className="block text-sm font-bold text-on-surface-variant mb-1">API Key Status</label>
-                      <div className="flex items-center gap-2">
-                        <div className={cn("w-3 h-3 rounded-full", process.env.GEMINI_API_KEY ? "bg-green-500" : "bg-error")}></div>
-                        <span className="text-sm font-medium">
-                          {process.env.GEMINI_API_KEY ? "Đã cấu hình" : "Chưa có API Key"}
-                        </span>
+                      <h3 className="font-headline font-bold text-xl">AI Provider</h3>
+                      <p className="text-xs text-on-surface-variant mt-0.5">Chọn dịch vụ AI để chuyển đổi giọng nói thành văn bản</p>
+                    </div>
+                  </div>
+
+                  {/* Multi-model toggle */}
+                  <div className="mb-6 bg-surface-container-low rounded-xl p-5 border border-outline-variant/10">
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <h4 className="text-sm font-bold text-on-surface">Smart Multi-Model</h4>
+                          <span className={cn("text-[9px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider", enableMultiModel ? "bg-green-100 text-green-700" : "bg-surface-container-highest text-on-surface-variant")}>                            {enableMultiModel ? 'ON' : 'OFF'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-on-surface-variant mt-1 leading-relaxed max-w-md">
+                          {enableMultiModel 
+                            ? 'Tu dong thu cac provider theo thu tu uu tien. Neu model A loi se tu dong chuyen sang model B.' 
+                            : 'Chi su dung duy nhat 1 provider da chon ben duoi.'}
+                        </p>
+                        {enableMultiModel && (
+                          <div className="flex items-center gap-1.5 mt-3 flex-wrap">
+                            {PROVIDER_PRIORITY.map((p, i) => {
+                              const available = isProviderAvailable(p, { provider: aiProvider, enableMultiModel, openaiApiKey: openaiKey, groqApiKey: groqKey, claudeApiKey: claudeKey });
+                              return (
+                                <React.Fragment key={p}>
+                                  <span className={cn("text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider border",
+                                    available ? "bg-green-50 text-green-700 border-green-200" : "bg-surface-container text-on-surface-variant/40 border-outline-variant/10 line-through"
+                                  )}>
+                                    {p}
+                                  </span>
+                                  {i < PROVIDER_PRIORITY.length - 1 && (
+                                    <ChevronRight className="w-3 h-3 text-on-surface-variant/30" />
+                                  )}
+                                </React.Fragment>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => setEnableMultiModel(!enableMultiModel)}
+                        className={cn("relative w-12 h-7 rounded-full transition-colors duration-200 shrink-0 ml-4",
+                          enableMultiModel ? "bg-primary" : "bg-surface-container-highest"
+                        )}
+                      >
+                        <div className={cn("absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform duration-200",
+                          enableMultiModel ? "translate-x-5" : "translate-x-0"
+                        )} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Provider selector (only shown when multi-model is OFF) */}
+                  {!enableMultiModel && (
+                  <div className="grid grid-cols-2 gap-3 mb-8">
+                    {([
+                      { id: 'gemini' as AIProvider, label: 'Google Gemini', color: 'primary', desc: 'Multimodal (Free)', icon: (
+                        <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" fill="currentColor">
+                          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z" />
+                        </svg>
+                      )},
+                      { id: 'openai' as AIProvider, label: 'OpenAI / ChatGPT', color: '#10a37f', desc: 'Whisper + GPT-4o', icon: (
+                        <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" fill="currentColor">
+                          <path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073zM13.26 22.43a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.795.795 0 0 0 .392-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494zM3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.676l5.815 3.355-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.896zm16.597 3.855l-5.843-3.37 2.02-1.167a.076.076 0 0 1 .071 0l4.83 2.786a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.402-.676zm2.01-3.023l-.141-.085-4.774-2.782a.776.776 0 0 0-.785 0L9.409 9.23V6.897a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135l-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08-4.778 2.758a.795.795 0 0 0-.393.681zm1.097-2.365l2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5z" />
+                        </svg>
+                      )},
+                      { id: 'groq' as AIProvider, label: 'Groq', color: '#f55036', desc: 'Whisper + Llama 3 (Free)', icon: (
+                        <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" fill="currentColor">
+                          <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      )},
+                      { id: 'claude' as AIProvider, label: 'Claude (Anthropic)', color: '#d97706', desc: 'Sonnet 4 (Paid)', icon: (
+                        <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" fill="currentColor">
+                          <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z"/>
+                        </svg>
+                      )},
+                    ]).map(({ id, label, color, desc, icon }) => {
+                      const isActive = aiProvider === id;
+                      const borderColor = isActive
+                        ? id === 'gemini' ? 'border-primary bg-primary/5 text-primary'
+                        : id === 'openai' ? 'border-[#10a37f] bg-[#10a37f]/5 text-[#10a37f]'
+                        : id === 'groq' ? 'border-[#f55036] bg-[#f55036]/5 text-[#f55036]'
+                        : 'border-[#d97706] bg-[#d97706]/5 text-[#d97706]'
+                        : 'border-surface-container-high text-on-surface-variant hover:border-outline-variant';
+                      return (
+                        <button
+                          key={id}
+                          onClick={() => setAIProvider(id)}
+                          className={cn(
+                            "flex flex-col items-center justify-center gap-1.5 px-4 py-4 rounded-xl border-2 font-bold text-sm transition-all duration-200",
+                            borderColor
+                          )}
+                        >
+                          <div className="flex items-center gap-2">
+                            {icon}
+                            <span className="text-xs font-bold">{label}</span>
+                            {isActive && <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />}
+                          </div>
+                          <span className={cn("text-[10px] font-medium", isActive ? "opacity-80" : "text-on-surface-variant")}>{desc}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  )}
+
+                  {/* Provider config panels (only when multi-model is OFF) */}
+                  {!enableMultiModel && (
+                  <>
+                  {/* Gemini: show env status, no editable key */}
+                  {aiProvider === 'gemini' && (
+                    <div className="bg-primary/5 border border-primary/15 rounded-xl p-5 flex items-start gap-4">
+                      <div className={cn("w-10 h-10 rounded-full flex items-center justify-center shrink-0", process.env.GEMINI_API_KEY ? "bg-green-100" : "bg-error/10")}>
+                        <ShieldCheck className={cn("w-5 h-5", process.env.GEMINI_API_KEY ? "text-green-600" : "text-error")} />
+                      </div>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <p className="text-sm font-bold text-on-surface">Gemini API Key</p>
+                          <span className={cn("text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider", process.env.GEMINI_API_KEY ? "bg-green-100 text-green-700" : "bg-error/10 text-error")}>
+                            {process.env.GEMINI_API_KEY ? 'Đã cấu hình' : 'Chưa có key'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-on-surface-variant">Key được đọc từ biến môi trường <code className="bg-surface-container px-1 rounded">GEMINI_API_KEY</code>. Model và prompt giữ nguyên như cấu hình gốc.</p>
+                        <a
+                          href={GEMINI_API_KEYS_URL}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 mt-3 text-xs font-bold text-primary hover:underline"
+                        >
+                          Lấy API Key tại Google AI Studio <ExternalLink className="w-3 h-3" />
+                        </a>
                       </div>
                     </div>
-                    <p className="text-xs text-on-surface-variant">
-                      Bạn cần thêm <strong>GEMINI_API_KEY</strong> vào mục <strong>Secrets</strong> của AI Studio để kích hoạt tính năng chuyển đổi giọng nói.
-                    </p>
+                  )}
+
+                  {/* OpenAI: link + manual key input */}
+                  {aiProvider === 'openai' && (
+                    <div className="space-y-4">
+                      <div className="bg-[#10a37f]/5 border border-[#10a37f]/20 rounded-xl p-5 flex items-start gap-4">
+                        <div className="w-10 h-10 rounded-full bg-[#10a37f]/10 flex items-center justify-center shrink-0">
+                          <ExternalLink className="w-5 h-5 text-[#10a37f]" />
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-sm font-bold text-on-surface">Liên kết OpenAI Platform</p>
+                          <p className="text-xs text-on-surface-variant mt-1 leading-relaxed">Tạo API Key từ trang quản lý OpenAI để kết nối Sonic Lens. Lưu ý: cần nạp credit riêng tại platform.openai.com (tối thiểu $5), không dùng chung với ChatGPT Plus/Business.</p>
+                          <a
+                            href={OPENAI_API_KEYS_URL}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-[#10a37f] text-white text-xs font-bold rounded-lg hover:bg-[#0d8a6a] transition-colors"
+                          >
+                            Mở trang OpenAI API Keys <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <label htmlFor="openai-key-input" className="text-sm font-bold text-on-surface-variant">OpenAI API Key</label>
+                          <span className="text-[10px] bg-surface-container px-2 py-0.5 rounded font-bold text-on-surface-variant uppercase tracking-wider">Whisper + GPT-4o mini</span>
+                        </div>
+                        <div className="relative">
+                          <input
+                            id="openai-key-input"
+                            type={showOpenaiKey ? 'text' : 'password'}
+                            value={openaiKey}
+                            onChange={(e) => setOpenaiKey(e.target.value)}
+                            placeholder="sk-..."
+                            className="w-full bg-surface-container-low border border-surface-container-high rounded-xl px-4 py-3 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-[#10a37f] transition-all font-mono"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowOpenaiKey(!showOpenaiKey)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface transition-colors"
+                          >
+                            {showOpenaiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                        <p className="mt-2 text-xs text-on-surface-variant">Sử dụng <strong>Whisper</strong> để nhận diện giọng nói và <strong>GPT-4o mini</strong> để phân tích transcript có speaker.</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Groq: link + manual key input */}
+                  {aiProvider === 'groq' && (
+                    <div className="space-y-4">
+                      <div className="bg-[#f55036]/5 border border-[#f55036]/20 rounded-xl p-5 flex items-start gap-4">
+                        <div className="w-10 h-10 rounded-full bg-[#f55036]/10 flex items-center justify-center shrink-0">
+                          <ExternalLink className="w-5 h-5 text-[#f55036]" />
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-sm font-bold text-on-surface">Groq Cloud Console</p>
+                          <p className="text-xs text-on-surface-variant mt-1 leading-relaxed">Groq cung cap API <strong>mien phi</strong> voi toc do cuc nhanh. Bao gom Whisper Large v3 (speech-to-text) va Llama 3.3 70B (structuring). Khong can nap credit.</p>
+                          <a
+                            href={GROQ_API_KEYS_URL}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-[#f55036] text-white text-xs font-bold rounded-lg hover:bg-[#d44530] transition-colors"
+                          >
+                            Tao API Key tai Groq Console <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <label htmlFor="groq-key-input" className="text-sm font-bold text-on-surface-variant">Groq API Key</label>
+                          <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold uppercase tracking-wider">Free Tier</span>
+                        </div>
+                        <div className="relative">
+                          <input
+                            id="groq-key-input"
+                            type={showGroqKey ? 'text' : 'password'}
+                            value={groqKey}
+                            onChange={(e) => setGroqKey(e.target.value)}
+                            placeholder="gsk_..."
+                            className="w-full bg-surface-container-low border border-surface-container-high rounded-xl px-4 py-3 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-[#f55036] transition-all font-mono"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowGroqKey(!showGroqKey)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface transition-colors"
+                          >
+                            {showGroqKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                        <p className="mt-2 text-xs text-on-surface-variant">Su dung <strong>Whisper Large v3</strong> (speech-to-text) va <strong>Llama 3.3 70B</strong> (structuring). Hoan toan mien phi.</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Claude: link + manual key input */}
+                  {aiProvider === 'claude' && (
+                    <div className="space-y-4">
+                      <div className="bg-[#d97706]/5 border border-[#d97706]/20 rounded-xl p-5 flex items-start gap-4">
+                        <div className="w-10 h-10 rounded-full bg-[#d97706]/10 flex items-center justify-center shrink-0">
+                          <ExternalLink className="w-5 h-5 text-[#d97706]" />
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-sm font-bold text-on-surface">Anthropic Console</p>
+                          <p className="text-xs text-on-surface-variant mt-1 leading-relaxed">Claude su dung API tra phi cua Anthropic. Can nap credit tai console.anthropic.com. <strong>Luu y:</strong> Claude khong ho tro doc audio truc tiep, can ket hop voi Groq (mien phi) hoac OpenAI de chuyen am thanh thanh van ban truoc.</p>
+                          <a
+                            href={CLAUDE_API_KEYS_URL}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-[#d97706] text-white text-xs font-bold rounded-lg hover:bg-[#b45309] transition-colors"
+                          >
+                            Tao API Key tai Anthropic <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+                        </div>
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <label htmlFor="claude-key-input" className="text-sm font-bold text-on-surface-variant">Claude API Key</label>
+                          <span className="text-[10px] bg-[#d97706]/10 text-[#d97706] px-2 py-0.5 rounded font-bold uppercase tracking-wider">Paid</span>
+                        </div>
+                        <div className="relative">
+                          <input
+                            id="claude-key-input"
+                            type={showClaudeKey ? 'text' : 'password'}
+                            value={claudeKey}
+                            onChange={(e) => setClaudeKey(e.target.value)}
+                            placeholder="sk-ant-..."
+                            className="w-full bg-surface-container-low border border-surface-container-high rounded-xl px-4 py-3 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-[#d97706] transition-all font-mono"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowClaudeKey(!showClaudeKey)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface transition-colors"
+                          >
+                            {showClaudeKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                        <p className="mt-2 text-xs text-on-surface-variant">Su dung <strong>Claude Sonnet 4</strong> de phan tich transcript. Can co <strong>Groq API Key</strong> (mien phi) hoac <strong>OpenAI Key</strong> de chuyen am thanh thanh van ban.</p>
+                        {!groqKey && !openaiKey && (
+                          <p className="mt-2 text-xs text-error font-bold">Chua co Groq hoac OpenAI API Key cho buoc speech-to-text. Vui long them Groq key (mien phi) truoc.</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  </>
+                  )}
+
+                  {/* Multi-model: show ALL key inputs at once */}
+                  {enableMultiModel && (
+                    <div className="space-y-4">
+                      <p className="text-xs text-on-surface-variant font-bold uppercase tracking-wider">API Keys (them key de mo khoa cac provider)</p>
+
+                      {/* Gemini */}
+                      <div className="bg-primary/5 border border-primary/15 rounded-xl p-4 flex items-center gap-3">
+                        <div className={cn("w-8 h-8 rounded-full flex items-center justify-center shrink-0", process.env.GEMINI_API_KEY ? "bg-green-100" : "bg-error/10")}>
+                          <ShieldCheck className={cn("w-4 h-4", process.env.GEMINI_API_KEY ? "text-green-600" : "text-error")} />
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-sm font-bold text-on-surface">Gemini</p>
+                          <p className="text-[10px] text-on-surface-variant">Key tu bien moi truong (env)</p>
+                        </div>
+                        <span className={cn("text-[10px] px-2 py-0.5 rounded font-bold uppercase", process.env.GEMINI_API_KEY ? "bg-green-100 text-green-700" : "bg-error/10 text-error")}>
+                          {process.env.GEMINI_API_KEY ? 'OK' : 'Missing'}
+                        </span>
+                      </div>
+
+                      {/* Groq */}
+                      <div className="bg-[#f55036]/5 border border-[#f55036]/15 rounded-xl p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm font-bold text-on-surface">Groq</span>
+                          <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold uppercase">Free</span>
+                        </div>
+                        <div className="relative">
+                          <input
+                            type={showGroqKey ? 'text' : 'password'}
+                            value={groqKey}
+                            onChange={(e) => setGroqKey(e.target.value)}
+                            placeholder="gsk_..."
+                            className="w-full bg-surface-container-low border border-surface-container-high rounded-lg px-3 py-2 pr-10 text-xs focus:outline-none focus:ring-2 focus:ring-[#f55036] transition-all font-mono"
+                          />
+                          <button type="button" onClick={() => setShowGroqKey(!showGroqKey)} className="absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface">
+                            {showGroqKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* OpenAI */}
+                      <div className="bg-[#10a37f]/5 border border-[#10a37f]/15 rounded-xl p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm font-bold text-on-surface">OpenAI</span>
+                          <span className="text-[10px] bg-[#10a37f]/10 text-[#10a37f] px-2 py-0.5 rounded font-bold uppercase">Paid</span>
+                        </div>
+                        <div className="relative">
+                          <input
+                            type={showOpenaiKey ? 'text' : 'password'}
+                            value={openaiKey}
+                            onChange={(e) => setOpenaiKey(e.target.value)}
+                            placeholder="sk-..."
+                            className="w-full bg-surface-container-low border border-surface-container-high rounded-lg px-3 py-2 pr-10 text-xs focus:outline-none focus:ring-2 focus:ring-[#10a37f] transition-all font-mono"
+                          />
+                          <button type="button" onClick={() => setShowOpenaiKey(!showOpenaiKey)} className="absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface">
+                            {showOpenaiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Claude */}
+                      <div className="bg-[#d97706]/5 border border-[#d97706]/15 rounded-xl p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm font-bold text-on-surface">Claude</span>
+                          <span className="text-[10px] bg-[#d97706]/10 text-[#d97706] px-2 py-0.5 rounded font-bold uppercase">Paid</span>
+                        </div>
+                        <div className="relative">
+                          <input
+                            type={showClaudeKey ? 'text' : 'password'}
+                            value={claudeKey}
+                            onChange={(e) => setClaudeKey(e.target.value)}
+                            placeholder="sk-ant-..."
+                            className="w-full bg-surface-container-low border border-surface-container-high rounded-lg px-3 py-2 pr-10 text-xs focus:outline-none focus:ring-2 focus:ring-[#d97706] transition-all font-mono"
+                          />
+                          <button type="button" onClick={() => setShowClaudeKey(!showClaudeKey)} className="absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface">
+                            {showClaudeKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Save */}
+                  <div className="flex items-center gap-4 mt-6 pt-6 border-t border-outline-variant/10">
+                    <button
+                      onClick={() => {
+                        saveAIConfig({ provider: aiProvider, enableMultiModel, openaiApiKey: openaiKey, groqApiKey: groqKey, claudeApiKey: claudeKey });
+                        setApiSaveStatus('saved');
+                        setTimeout(() => setApiSaveStatus('idle'), 3000);
+                      }}
+                      className="flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-xl font-bold text-sm shadow-lg shadow-primary/20 hover:shadow-primary/30 transition-all active:scale-95"
+                    >
+                      <Save className="w-4 h-4" />
+                      Lưu cài đặt
+                    </button>
+                    <AnimatePresence>
+                      {apiSaveStatus === 'saved' && (
+                        <motion.div
+                          initial={{ opacity: 0, x: -8 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0 }}
+                          className="flex items-center gap-2 text-sm font-bold text-green-600"
+                        >
+                          <CheckCircle2 className="w-4 h-4" />
+                          Đã lưu!
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
                 </div>
 
-                <div className="bg-surface-container-lowest p-8 rounded-xl shadow-sm border border-outline-variant/10">
-                  <div className="flex items-center gap-3 mb-6">
-                    <div className="bg-secondary-fixed p-2 rounded-lg">
-                      <LayoutDashboard className="text-secondary w-6 h-6" />
-                    </div>
-                    <h3 className="font-headline font-bold text-xl">Supabase Cloud</h3>
-                  </div>
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-bold text-on-surface-variant mb-1">Connection Status</label>
-                      <div className="flex items-center gap-2">
-                        <div className={cn("w-3 h-3 rounded-full", isSupabaseConfigured ? "bg-green-500" : "bg-error")}></div>
-                        <span className="text-sm font-medium">
-                          {isSupabaseConfigured ? "Đã kết nối" : "Chưa cấu hình"}
-                        </span>
+                {/* Supabase status - unchanged */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                  <div className="bg-surface-container-lowest p-8 rounded-xl shadow-sm border border-outline-variant/10">
+                    <div className="flex items-center gap-3 mb-6">
+                      <div className="bg-secondary-fixed p-2 rounded-lg">
+                        <LayoutDashboard className="text-secondary w-6 h-6" />
                       </div>
+                      <h3 className="font-headline font-bold text-xl">Supabase Cloud</h3>
                     </div>
-                    <p className="text-xs text-on-surface-variant">
-                      Yêu cầu <strong>VITE_SUPABASE_URL</strong> và <strong>VITE_SUPABASE_ANON_KEY</strong> để lưu trữ file âm thanh và transcript.
-                    </p>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-bold text-on-surface-variant mb-1">Connection Status</label>
+                        <div className="flex items-center gap-2">
+                          <div className={cn("w-3 h-3 rounded-full", isSupabaseConfigured ? "bg-green-500" : "bg-error")}></div>
+                          <span className="text-sm font-medium">
+                            {isSupabaseConfigured ? "Đã kết nối" : "Chưa cấu hình"}
+                          </span>
+                        </div>
+                      </div>
+                      <p className="text-xs text-on-surface-variant">
+                        Yêu cầu <strong>VITE_SUPABASE_URL</strong> và <strong>VITE_SUPABASE_ANON_KEY</strong> để lưu trữ file âm thanh và transcript.
+                      </p>
+                    </div>
                   </div>
                 </div>
               </div>
