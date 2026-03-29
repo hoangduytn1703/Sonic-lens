@@ -54,6 +54,42 @@ const Navbar = () => {
 
 // --- Pages ---
 
+// Parse raw API errors into friendly Vietnamese messages
+function parseFriendlyError(raw: string): string {
+  const lower = raw.toLowerCase();
+
+  if (lower.includes('429') || lower.includes('rate limit') || lower.includes('quota') || lower.includes('resource_exhausted') || lower.includes('exceeded')) {
+    return 'Da het gioi han su dung AI (rate limit/quota). Vui long doi vai phut hoac chuyen sang model khac trong Admin > API Settings.';
+  }
+  if (lower.includes('too large') || lower.includes('payload') || lower.includes('content-length') || lower.includes('request entity')) {
+    return 'File am thanh qua lon. Thu ghi am ngan hon hoac bat che do Multi-Model de tu dong chia nho file.';
+  }
+  if (lower.includes('missing') && lower.includes('key')) {
+    return 'Chua cau hinh API Key. Vui long vao Admin > API Settings de them key.';
+  }
+  if (lower.includes('unauthorized') || lower.includes('401') || lower.includes('invalid') && lower.includes('key')) {
+    return 'API Key khong hop le hoac da het han. Vui long kiem tra lai key trong Admin > API Settings.';
+  }
+  if (lower.includes('network') || lower.includes('fetch') || lower.includes('failed to fetch') || lower.includes('cors')) {
+    return 'Loi ket noi mang. Vui long kiem tra internet va thu lai.';
+  }
+  if (lower.includes('timeout') || lower.includes('timed out')) {
+    return 'Yeu cau qua thoi gian cho. Thu ghi am ngan hon hoac chon model nhanh hon (Groq).';
+  }
+  if (lower.includes('all ai providers failed')) {
+    return 'Tat ca cac AI model deu that bai. Vui long kiem tra API key hoac thu lai sau vai phut.';
+  }
+  if (lower.includes('no whisper') || lower.includes('no stt')) {
+    return 'Khong co dich vu chuyen giong noi. Vui long them Groq API Key (mien phi) trong Admin > API Settings.';
+  }
+
+  // Default: clean up the message
+  if (raw.length > 200) {
+    return 'Da xay ra loi khi xu ly am thanh. Vui long thu lai hoac kiem tra cau hinh AI trong Admin.';
+  }
+  return raw;
+}
+
 const Dashboard = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -63,6 +99,7 @@ const Dashboard = () => {
   const [isFinalizing, setIsFinalizing] = useState(false);
   const isProcessing = processingCount > 0 || isFinalizing;
   const [currentTranscript, setCurrentTranscript] = useState<string>("");
+  const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [fullTranscript, setFullTranscript] = useState<TranscriptItem[]>([]);
   const [lastAudioUrl, setLastAudioUrl] = useState<string | null>(null);
   const [finalAudioBlob, setFinalAudioBlob] = useState<Blob | null>(null);
@@ -254,6 +291,7 @@ const Dashboard = () => {
       setModelIndicators(new Map());
       lastUsedProviderRef.current = null;
       setProcessingCount(0);
+      setTranscriptError(null);
       setSaveStatus('idle');
       setHasAutoShownModal(false);
 
@@ -476,7 +514,7 @@ const Dashboard = () => {
       }
     } catch (err: any) {
       console.error("Transcription error:", err);
-      setCurrentTranscript(prev => prev + `\n\n[Loi AI: ${err.message}]`);
+      setTranscriptError(parseFriendlyError(err.message));
     } finally {
       setProcessingCount(prev => Math.max(0, prev - 1));
     }
@@ -497,6 +535,7 @@ const Dashboard = () => {
 
     setIsFinalizing(true);
     setSaveStatus('idle');
+    setTranscriptError(null);
     allBlobsRef.current = [file];
     setFinalAudioBlob(file);
     fullSummaryRef.current = "";
@@ -630,8 +669,8 @@ const Dashboard = () => {
         setShouldSave(true);
         console.log("Import file completed. Waiting for user to name and save.");
       } catch (err: any) {
-        console.error("Transcription error:", err);
-        setCurrentTranscript(`[Loi AI: ${err.message}]`);
+        setTranscriptError(parseFriendlyError(err.message));
+        setCurrentTranscript("");
         setIsFinalizing(false);
       }
     }
@@ -1005,6 +1044,36 @@ const Dashboard = () => {
                   </React.Fragment>
                 ))}
               </div>
+            ) : transcriptError ? (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-error/5 border border-error/15 rounded-2xl p-6 space-y-4"
+              >
+                <div className="flex items-start gap-4">
+                  <div className="w-10 h-10 rounded-full bg-error/10 flex items-center justify-center shrink-0">
+                    <AlertCircle className="w-5 h-5 text-error" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h4 className="font-headline font-bold text-error text-sm">Loi xu ly</h4>
+                    <p className="text-sm text-on-surface-variant mt-1 leading-relaxed">{transcriptError}</p>
+                  </div>
+                </div>
+                <div className="flex gap-2 pl-14">
+                  <button
+                    onClick={() => { setTranscriptError(null); setCurrentTranscript(''); }}
+                    className="text-xs bg-surface-container-low hover:bg-surface-container-high border border-outline-variant/20 rounded-lg px-3 py-1.5 font-medium transition-colors"
+                  >
+                    Bo qua
+                  </button>
+                  <button
+                    onClick={() => window.location.href = '/admin'}
+                    className="text-xs bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 rounded-lg px-3 py-1.5 font-medium transition-colors"
+                  >
+                    Kiem tra API Key
+                  </button>
+                </div>
+              </motion.div>
             ) : currentTranscript ? (
               <div className="text-xl font-body text-on-surface whitespace-pre-wrap italic opacity-70">
                 {currentTranscript}

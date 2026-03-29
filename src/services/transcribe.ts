@@ -1,8 +1,10 @@
 // Transcription router - delegates to Gemini, OpenAI, Groq, or Claude based on user config.
 // Supports multi-model fallback: tries providers in priority order, skips on failure.
+// HYBRID MODE (multi-model): Whisper STT (free) -> Gemini text-only (saves ~80% tokens)
 // gemini.ts is NOT modified - this file wraps it.
 
 import { transcribeAudio as transcribeWithGemini } from './gemini';
+import { GoogleGenAI } from "@google/genai";
 import { getAIConfig, isProviderAvailable, PROVIDER_PRIORITY, type AIProvider } from '../lib/aiConfig';
 
 // Shared prompt for structuring transcript (used by OpenAI, Groq, Claude)
@@ -36,7 +38,214 @@ function audioBase64ToBlob(base64Audio: string, mimeType: string) {
 }
 
 // ──────────────────────────────────────────────
-// OPENAI: Whisper + GPT-4o-mini
+// WHISPER STT (Speech-to-Text only, no structuring)
+// Priority: Groq (free) > OpenAI (paid)
+// Returns raw text string
+// ──────────────────────────────────────────────
+async function whisperSTT(base64Audio: string, mimeType: string): Promise<{ text: string; sttProvider: string }> {
+  const config = getAIConfig();
+  const { blob: audioBlob, ext } = audioBase64ToBlob(base64Audio, mimeType);
+
+  // Try Groq Whisper first (free)
+  if (config.groqApiKey && !disabledProviders.has('groq')) {
+    try {
+      const formData = new FormData();
+      formData.append('file', audioBlob, `audio.${ext}`);
+      formData.append('model', 'whisper-large-v3');
+      formData.append('response_format', 'verbose_json');
+      formData.append('language', 'vi');
+
+      const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.groqApiKey}` },
+        body: formData,
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        console.log('[Hybrid] STT completed via Groq Whisper');
+        return { text: data.text || '', sttProvider: 'groq-whisper' };
+      }
+
+      const errData = await res.json().catch(() => ({}));
+      const errMsg = errData?.error?.message || res.statusText;
+      console.warn('[Hybrid] Groq Whisper failed:', errMsg);
+      if (shouldDisableProvider(errMsg)) {
+        disabledProviders.add('groq');
+        console.warn('[Hybrid] Groq BLACKLISTED for STT');
+      }
+    } catch (err: any) {
+      console.warn('[Hybrid] Groq Whisper error:', err.message);
+    }
+  }
+
+  // Fallback: OpenAI Whisper (paid)
+  if (config.openaiApiKey && !disabledProviders.has('openai')) {
+    try {
+      const formData = new FormData();
+      formData.append('file', audioBlob, `audio.${ext}`);
+      formData.append('model', 'whisper-1');
+      formData.append('response_format', 'verbose_json');
+      formData.append('language', 'vi');
+
+      const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.openaiApiKey}` },
+        body: formData,
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        console.log('[Hybrid] STT completed via OpenAI Whisper');
+        return { text: data.text || '', sttProvider: 'openai-whisper' };
+      }
+
+      const errData = await res.json().catch(() => ({}));
+      console.warn('[Hybrid] OpenAI Whisper failed:', errData?.error?.message || res.statusText);
+    } catch (err: any) {
+      console.warn('[Hybrid] OpenAI Whisper error:', err.message);
+    }
+  }
+
+  throw new Error('No Whisper STT service available. Need Groq or OpenAI key.');
+}
+
+// ──────────────────────────────────────────────
+// GEMINI TEXT-ONLY STRUCTURING (no audio, saves ~80% tokens)
+// Uses gemini-2.0-flash for text structuring only
+// ──────────────────────────────────────────────
+async function structureWithGemini(rawText: string): Promise<any> {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error('Missing GEMINI_API_KEY in environment.');
+  }
+
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+
+  const prompt = `Ban la mot chuyen gia ghi chep bien ban cuoc hop chuyen nghiep.
+Hay phan tich doan van ban duoi day (da duoc chuyen tu giong noi sang chu) va cau truc lai thanh JSON.
+
+YEU CAU:
+1. Phan biet cac nguoi noi khac nhau (Speaker 1, Speaker 2...).
+2. Doan gioi tinh cua nguoi noi (Nam/Nu/Khong ro).
+3. Ghi nhan chinh xac noi dung hoi thoai.
+4. Danh dau "isUncertain": true cho nhung doan khong ro rang.
+5. Tom tat ngan gon cac y chinh.
+
+Dinh dang ket qua tra ve BAT BUOC la JSON:
+{
+  "transcript": [
+    { "speaker": "Speaker 1", "gender": "Nam/Nu/Khong ro", "text": "...", "timestamp": "mm:ss", "isUncertain": false }
+  ],
+  "summary": "Tom tat ngan gon noi dung."
+}
+
+NOI DUNG CAN PHAN TICH:
+${rawText}`;
+
+  const response = await ai.models.generateContent({
+    model: "gemini-2.0-flash",
+    contents: [{ parts: [{ text: prompt }] }],
+    config: { responseMimeType: "application/json" }
+  });
+
+  const text = response.text;
+  console.log('[Hybrid] Gemini text structuring completed (no audio sent, ~80% token savings)');
+  return JSON.parse(text);
+}
+
+// ──────────────────────────────────────────────
+// HYBRID PIPELINE: Whisper STT (free) -> LLM text structuring (cheap)
+// ──────────────────────────────────────────────
+async function transcribeHybrid(base64Audio: string, mimeType: string): Promise<any> {
+  // Step 1: Free STT via Whisper
+  const { text: rawText, sttProvider } = await whisperSTT(base64Audio, mimeType);
+
+  if (!rawText.trim()) {
+    return {
+      transcript: [{ speaker: 'System', gender: 'Khong ro', text: '[No speech detected]', timestamp: '00:00', isUncertain: true }],
+      summary: 'No content detected.',
+      _usedProvider: `hybrid(${sttProvider}+none)`
+    };
+  }
+
+  // Step 2: Structure text with LLMs (try in order: Gemini text > Groq Llama > OpenAI GPT > Claude)
+  const config = getAIConfig();
+  let result: any;
+  let structureProvider = '';
+
+  // Try Gemini text-only first (cheapest - only text, no audio tokens)
+  if (process.env.GEMINI_API_KEY && !disabledProviders.has('gemini')) {
+    try {
+      result = await structureWithGemini(rawText);
+      structureProvider = 'gemini-text';
+    } catch (err: any) {
+      console.warn('[Hybrid] Gemini text structuring failed:', err.message);
+      if (shouldDisableProvider(err.message)) {
+        disabledProviders.add('gemini');
+      }
+    }
+  }
+
+  // Fallback: Groq Llama (free)
+  if (!result && config.groqApiKey && !disabledProviders.has('groq')) {
+    try {
+      const llmRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.groqApiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: STRUCTURING_SYSTEM_PROMPT },
+            { role: 'user', content: `Structure this transcript:\n\n${rawText}` },
+          ],
+        }),
+      });
+      if (llmRes.ok) {
+        const data = await llmRes.json();
+        result = JSON.parse(data.choices?.[0]?.message?.content || '{}');
+        structureProvider = 'groq-llama';
+      }
+    } catch (err: any) {
+      console.warn('[Hybrid] Groq LLM structuring failed:', err.message);
+    }
+  }
+
+  // Fallback: OpenAI GPT (paid)
+  if (!result && config.openaiApiKey) {
+    try {
+      const gptRes = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${config.openaiApiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: STRUCTURING_SYSTEM_PROMPT },
+            { role: 'user', content: `Structure this transcript:\n\n${rawText}` },
+          ],
+        }),
+      });
+      if (gptRes.ok) {
+        const data = await gptRes.json();
+        result = JSON.parse(data.choices?.[0]?.message?.content || '{}');
+        structureProvider = 'openai-gpt';
+      }
+    } catch (err: any) {
+      console.warn('[Hybrid] OpenAI GPT structuring failed:', err.message);
+    }
+  }
+
+  if (!result) {
+    throw new Error('Hybrid pipeline failed: STT succeeded but no LLM available for structuring.');
+  }
+
+  console.log(`[Hybrid] Complete: ${sttProvider} -> ${structureProvider}`);
+  return { ...result, _usedProvider: `hybrid(${sttProvider}+${structureProvider})` };
+}
+
+// ──────────────────────────────────────────────
+// OPENAI: Whisper + GPT-4o-mini (standalone)
 // ──────────────────────────────────────────────
 async function transcribeWithOpenAI(base64Audio: string, mimeType: string, apiKey: string) {
   const { blob: audioBlob, ext } = audioBase64ToBlob(base64Audio, mimeType);
@@ -47,7 +256,6 @@ async function transcribeWithOpenAI(base64Audio: string, mimeType: string, apiKe
   formData.append('response_format', 'verbose_json');
   formData.append('language', 'vi');
 
-  // Step 1: Whisper transcription
   const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}` },
@@ -62,13 +270,9 @@ async function transcribeWithOpenAI(base64Audio: string, mimeType: string, apiKe
   const whisperData = await whisperRes.json();
   const rawText = whisperData.text || '';
 
-  // Step 2: GPT-4o-mini to structure transcript
   const gptRes = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'gpt-4o-mini',
       response_format: { type: 'json_object' },
@@ -91,8 +295,7 @@ async function transcribeWithOpenAI(base64Audio: string, mimeType: string, apiKe
 }
 
 // ──────────────────────────────────────────────
-// GROQ: Whisper Large v3 (free) + Llama 3 (free)
-// Groq API is OpenAI-compatible, only the base URL differs.
+// GROQ: Whisper Large v3 (free) + Llama 3.3 (free) (standalone)
 // ──────────────────────────────────────────────
 async function transcribeWithGroq(base64Audio: string, mimeType: string, apiKey: string) {
   const { blob: audioBlob, ext } = audioBase64ToBlob(base64Audio, mimeType);
@@ -103,7 +306,6 @@ async function transcribeWithGroq(base64Audio: string, mimeType: string, apiKey:
   formData.append('response_format', 'verbose_json');
   formData.append('language', 'vi');
 
-  // Step 1: Groq Whisper transcription
   const whisperRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}` },
@@ -118,13 +320,9 @@ async function transcribeWithGroq(base64Audio: string, mimeType: string, apiKey:
   const whisperData = await whisperRes.json();
   const rawText = whisperData.text || '';
 
-  // Step 2: Llama 3.3 70B to structure transcript into JSON
   const llmRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'llama-3.3-70b-versatile',
       response_format: { type: 'json_object' },
@@ -147,22 +345,13 @@ async function transcribeWithGroq(base64Audio: string, mimeType: string, apiKey:
 }
 
 // ──────────────────────────────────────────────
-// CLAUDE: Anthropic Messages API
-// Claude does not have a native audio API, so we use Groq Whisper (if key exists)
-// or OpenAI Whisper as a fallback for STT, then Claude for structuring.
-// If no Whisper key is available, we send audio as base64 to Claude directly
-// (Claude 3.5 Sonnet supports multimodal but NOT audio - so we need a Whisper step).
-// For simplicity: we require a Groq key (free) for the Whisper step.
+// CLAUDE: Whisper STT -> Claude structuring (standalone)
 // ──────────────────────────────────────────────
 async function transcribeWithClaude(base64Audio: string, mimeType: string, claudeApiKey: string) {
   const config = getAIConfig();
-
-  // Claude cannot process audio directly. We need a Whisper service for STT.
-  // Priority: Groq (free) > OpenAI (paid)
   let rawText = '';
 
   if (config.groqApiKey) {
-    // Use Groq Whisper (free) for speech-to-text
     const { blob: audioBlob, ext } = audioBase64ToBlob(base64Audio, mimeType);
     const formData = new FormData();
     formData.append('file', audioBlob, `audio.${ext}`);
@@ -183,7 +372,6 @@ async function transcribeWithClaude(base64Audio: string, mimeType: string, claud
     const whisperData = await whisperRes.json();
     rawText = whisperData.text || '';
   } else if (config.openaiApiKey) {
-    // Fallback: use OpenAI Whisper
     const { blob: audioBlob, ext } = audioBase64ToBlob(base64Audio, mimeType);
     const formData = new FormData();
     formData.append('file', audioBlob, `audio.${ext}`);
@@ -204,14 +392,9 @@ async function transcribeWithClaude(base64Audio: string, mimeType: string, claud
     const whisperData = await whisperRes.json();
     rawText = whisperData.text || '';
   } else {
-    throw new Error(
-      'Claude cannot process audio directly. Please add a Groq API Key (free) or OpenAI API Key in Admin > API Settings for speech-to-text.'
-    );
+    throw new Error('Claude cannot process audio directly. Please add a Groq API Key (free) or OpenAI API Key.');
   }
 
-  // Step 2: Claude to structure transcript
-  // Note: Anthropic API requires a CORS proxy or server-side call in production.
-  // For local/dev, this will work if the browser extensions allow it or via proxy.
   const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -242,7 +425,7 @@ async function transcribeWithClaude(base64Audio: string, mimeType: string, claud
 }
 
 // ──────────────────────────────────────────────
-// Execute transcription for a specific provider
+// Execute transcription for a specific provider (standalone mode)
 // ──────────────────────────────────────────────
 async function runProvider(provider: AIProvider, base64Audio: string, mimeType: string): Promise<any> {
   const config = getAIConfig();
@@ -276,17 +459,10 @@ async function runProvider(provider: AIProvider, base64Audio: string, mimeType: 
 // ──────────────────────────────────────────────
 const disabledProviders = new Set<AIProvider>();
 
-// Errors that indicate a provider should be disabled for this session
 const FATAL_ERROR_PATTERNS = [
-  '429',
-  'rate limit',
-  'quota',
-  'resource_exhausted',
-  'too large',
-  'request entity too large',
-  'payload too large',
-  'content-length',
-  'exceeded',
+  '429', 'rate limit', 'quota', 'resource_exhausted',
+  'too large', 'request entity too large', 'payload too large',
+  'content-length', 'exceeded',
 ];
 
 function shouldDisableProvider(errorMessage: string): boolean {
@@ -294,7 +470,6 @@ function shouldDisableProvider(errorMessage: string): boolean {
   return FATAL_ERROR_PATTERNS.some(pattern => lower.includes(pattern));
 }
 
-// Public: reset blacklist (e.g. when user changes settings)
 export function resetProviderBlacklist() {
   disabledProviders.clear();
   console.log('[Sonic Lens] Provider blacklist cleared.');
@@ -302,54 +477,56 @@ export function resetProviderBlacklist() {
 
 // ──────────────────────────────────────────────
 // MAIN ENTRY POINT
-// Multi-model: tries providers in priority order, falls back on failure.
-// Single-model: uses the selected provider only.
-// Blacklisted providers are skipped silently.
+// Multi-model ON  -> Hybrid pipeline (Whisper STT -> Gemini text)
+// Multi-model OFF -> Single provider (standalone, sends audio directly)
 // ──────────────────────────────────────────────
 export const transcribeAudio = async (base64Audio: string, mimeType: string) => {
   const config = getAIConfig();
 
-  // ── Single model mode ──
+  // ── Single model mode: use selected provider standalone ──
   if (!config.enableMultiModel) {
     console.log(`[Sonic Lens] Single model mode: using ${config.provider}`);
     const result = await runProvider(config.provider, base64Audio, mimeType);
     return { ...result, _usedProvider: config.provider };
   }
 
-  // ── Multi model mode ──
-  // Filter: available + not blacklisted
-  const availableProviders = PROVIDER_PRIORITY.filter(p => 
-    isProviderAvailable(p, config) && !disabledProviders.has(p)
-  );
+  // ── Multi model mode: use HYBRID pipeline ──
+  console.log('[Sonic Lens] Multi-model mode: using HYBRID pipeline (Whisper STT -> Gemini text)');
 
-  if (availableProviders.length === 0) {
-    // If all are blacklisted, try resetting and retrying once
-    if (disabledProviders.size > 0) {
-      console.log('[Sonic Lens] All providers blacklisted. Resetting blacklist and retrying...');
-      disabledProviders.clear();
-      const retryProviders = PROVIDER_PRIORITY.filter(p => isProviderAvailable(p, config));
-      if (retryProviders.length > 0) {
-        return transcribeWithFallback(retryProviders, base64Audio, mimeType);
+  try {
+    const result = await transcribeHybrid(base64Audio, mimeType);
+    return result; // _usedProvider already set inside transcribeHybrid
+  } catch (err: any) {
+    console.warn('[Sonic Lens] Hybrid pipeline failed, falling back to standalone providers...');
+
+    // Fallback: try standalone providers in priority order
+    const availableProviders = PROVIDER_PRIORITY.filter(p =>
+      isProviderAvailable(p, config) && !disabledProviders.has(p)
+    );
+
+    if (availableProviders.length === 0) {
+      if (disabledProviders.size > 0) {
+        console.log('[Sonic Lens] All providers blacklisted. Resetting and retrying...');
+        disabledProviders.clear();
+        const retryProviders = PROVIDER_PRIORITY.filter(p => isProviderAvailable(p, config));
+        if (retryProviders.length > 0) {
+          return transcribeWithStandaloneFallback(retryProviders, base64Audio, mimeType);
+        }
       }
+      throw new Error('No AI providers available. Please configure at least one API key in Admin > API Settings.');
     }
-    throw new Error('No AI providers available. Please configure at least one API key in Admin > API Settings.');
-  }
 
-  if (disabledProviders.size > 0) {
-    console.log(`[Sonic Lens] Blacklisted providers: ${[...disabledProviders].join(', ')}`);
+    return transcribeWithStandaloneFallback(availableProviders, base64Audio, mimeType);
   }
-  console.log(`[Sonic Lens] Active providers: ${availableProviders.join(' -> ')}`);
-
-  return transcribeWithFallback(availableProviders, base64Audio, mimeType);
 };
 
-// Internal: try providers in order with blacklist management
-async function transcribeWithFallback(providers: AIProvider[], base64Audio: string, mimeType: string) {
+// Standalone fallback: try providers one by one (sends audio directly)
+async function transcribeWithStandaloneFallback(providers: AIProvider[], base64Audio: string, mimeType: string) {
   const errors: string[] = [];
 
   for (const provider of providers) {
     try {
-      console.log(`[Sonic Lens] Trying provider: ${provider}...`);
+      console.log(`[Sonic Lens] Trying standalone provider: ${provider}...`);
       const result = await runProvider(provider, base64Audio, mimeType);
       console.log(`[Sonic Lens] Success with provider: ${provider}`);
       return { ...result, _usedProvider: provider };
@@ -358,16 +535,13 @@ async function transcribeWithFallback(providers: AIProvider[], base64Audio: stri
       console.warn(`[Sonic Lens] Provider ${provider} failed: ${errorMsg}`);
       errors.push(`${provider}: ${errorMsg}`);
 
-      // Check if this is a fatal error (rate limit, quota, size limit)
       if (shouldDisableProvider(errorMsg)) {
         disabledProviders.add(provider);
-        console.warn(`[Sonic Lens] Provider ${provider} BLACKLISTED for this session (${errorMsg.substring(0, 60)}...)`);
+        console.warn(`[Sonic Lens] Provider ${provider} BLACKLISTED (${errorMsg.substring(0, 60)}...)`);
       }
-      // Continue to next provider
     }
   }
 
-  // All providers failed
   throw new Error(
     `All AI providers failed.\n\n${errors.map((e, i) => `${i + 1}. ${e}`).join('\n')}\n\nPlease check your API keys or try again later.`
   );
