@@ -64,7 +64,19 @@ async function whisperSTT(base64Audio: string, mimeType: string): Promise<{ text
       if (res.ok) {
         const data = await res.json();
         console.log('[Hybrid] STT completed via Groq Whisper');
-        return { text: data.text || '', sttProvider: 'groq-whisper' };
+        
+        // Extract raw text with timestamps: [mm:ss] text
+        let formattedText = data.text || '';
+        if (data.segments) {
+          formattedText = data.segments.map((s: any) => {
+            const m = Math.floor(s.start / 60);
+            const sec = Math.floor(s.start % 60);
+            const ts = `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+            return `[${ts}] ${s.text}`;
+          }).join('\n');
+        }
+        
+        return { text: formattedText, sttProvider: 'groq-whisper' };
       }
 
       const errData = await res.json().catch(() => ({}));
@@ -97,7 +109,19 @@ async function whisperSTT(base64Audio: string, mimeType: string): Promise<{ text
       if (res.ok) {
         const data = await res.json();
         console.log('[Hybrid] STT completed via OpenAI Whisper');
-        return { text: data.text || '', sttProvider: 'openai-whisper' };
+        
+        // Extract raw text with timestamps: [mm:ss] text
+        let formattedText = data.text || '';
+        if (data.segments) {
+          formattedText = data.segments.map((s: any) => {
+            const m = Math.floor(s.start / 60);
+            const sec = Math.floor(s.start % 60);
+            const ts = `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+            return `[${ts}] ${s.text}`;
+          }).join('\n');
+        }
+
+        return { text: formattedText, sttProvider: 'openai-whisper' };
       }
 
       const errData = await res.json().catch(() => ({}));
@@ -122,21 +146,22 @@ async function structureWithGemini(rawText: string): Promise<any> {
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
   const prompt = `Ban la mot chuyen gia ghi chep bien ban cuoc hop chuyen nghiep.
-Hay phan tich doan van ban duoi day (da duoc chuyen tu giong noi sang chu) va cau truc lai thanh JSON.
+Hay phan tich doan van ban duoi day (da duoc Whisper STT chuyen tu giong noi sang chu kem timestamp [mm:ss]) va cau truc lai thanh JSON.
 
 YEU CAU:
 1. Phan biet cac nguoi noi khac nhau (Speaker 1, Speaker 2...).
 2. Doan gioi tinh cua nguoi noi (Nam/Nu/Khong ro).
 3. Ghi nhan chinh xac noi dung hoi thoai.
-4. Danh dau "isUncertain": true cho nhung doan khong ro rang.
-5. Tom tat ngan gon cac y chinh.
+4. GIU NGUYEN CHINH XAC TIMESTAMP [mm:ss] tu input vao field "timestamp". Khong duoc tu y thay doi thoi gian.
+5. Danh dau "isUncertain": true cho nhung doan khong ro rang.
+6. Tom tat ngan gon cac y chinh.
 
 Dinh dang ket qua tra ve BAT BUOC la JSON:
 {
   "transcript": [
-    { "speaker": "Speaker 1", "gender": "Nam/Nu/Khong ro", "text": "...", "timestamp": "mm:ss", "isUncertain": false }
+    { "speaker": "Tên người nói", "gender": "Nam/Nữ/Không rõ", "text": "...", "timestamp": "mm:ss", "isUncertain": false }
   ],
-  "summary": "Tom tat ngan gon noi dung."
+  "summary": "Tóm tắt ngắn gọn nội dung."
 }
 
 NOI DUNG CAN PHAN TICH:

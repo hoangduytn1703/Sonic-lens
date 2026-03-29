@@ -15,4 +15,5 @@ export interface Recording {
   summary: string;
   duration: number;
   is_important: boolean;
+  source: 'live' | 'upload';
 }
