@@ -24,8 +24,8 @@ const Navbar = () => {
         <div className="flex items-center gap-8">
           <Link to="/" className="text-2xl font-black tracking-tighter text-primary font-headline">Sonic Lens</Link>
           <nav className="hidden md:flex gap-6 items-center">
-            <Link 
-              to="/" 
+            <Link
+              to="/"
               className={cn(
                 "font-headline tracking-tight transition-colors duration-200",
                 !isAdmin ? "text-primary font-bold border-b-2 border-primary" : "text-on-surface-variant font-medium hover:text-primary"
@@ -33,8 +33,8 @@ const Navbar = () => {
             >
               Dashboard
             </Link>
-            <Link 
-              to="/admin" 
+            <Link
+              to="/admin"
               className={cn(
                 "font-headline tracking-tight transition-colors duration-200",
                 isAdmin ? "text-primary font-bold border-b-2 border-primary" : "text-on-surface-variant font-medium hover:text-primary"
@@ -190,7 +190,7 @@ const Dashboard = () => {
       else if (blobToSave.type.includes('m4a')) extension = 'm4a';
 
       const fileName = `recording_${Date.now()}.${extension}`;
-      
+
       console.log(`Đang lưu bản ghi (${blobToSave.size} bytes)...`);
 
       const { error: uploadError } = await supabase.storage
@@ -216,7 +216,7 @@ const Dashboard = () => {
         console.error("Chi tiết lỗi Database:", dbError);
         throw new Error(`Lỗi lưu Database: ${dbError.message}`);
       }
-      
+
       console.log("Đã lưu vào Supabase thành công!");
       setSaveStatus('success');
       setNamingError("");
@@ -463,7 +463,7 @@ const Dashboard = () => {
       const audioBlob = new Blob(chunks, { type: 'audio/webm' });
       allBlobsRef.current.push(audioBlob);
       console.log(`[Recorder] Collected segment #${allBlobsRef.current.length} (${(audioBlob.size / 1024 / 1024).toFixed(2)} MB)`);
-      
+
       handleSegmentTranscription(audioBlob);
 
       // If this was an auto-chunk (not pause or stop), restart recording immediately
@@ -491,7 +491,7 @@ const Dashboard = () => {
     try {
       const base64Audio = await blobToBase64(blob);
       const result = await transcribeAudio(base64Audio, blob.type);
-      
+
       // Track model changes for UI indicator
       const usedProvider = result._usedProvider as string | undefined;
       if (usedProvider && usedProvider !== lastUsedProviderRef.current) {
@@ -527,7 +527,7 @@ const Dashboard = () => {
     // Support .mp4, .m4a, .mp3, .wav, .mpeg
     const isAudio = file.type.startsWith('audio/');
     const isVideo = file.type.startsWith('video/') || file.name.endsWith('.mp4') || file.name.endsWith('.m4a');
-    
+
     if (!isAudio && !isVideo) {
       alert("Vui long chon file am thanh hoac video (.mp3, .wav, .m4a, .mp4, ...)");
       return;
@@ -545,7 +545,7 @@ const Dashboard = () => {
 
     // Reset provider blacklist for fresh import
     resetProviderBlacklist();
-    
+
     // Get duration of uploaded file
     const audioDuration = await getAudioDuration(file);
     setDuration(Math.round(audioDuration));
@@ -639,7 +639,7 @@ const Dashboard = () => {
         audioCtx.close();
         setIsFinalizing(false);
         setCurrentTranscript("");
-        
+
         // Show naming modal
         setNewRecordingTitle(file.name.split('.')[0] || `Imported ${format(new Date(), 'yyyy-MM-dd HH:mm')}`);
         setIsNamingModalOpen(true);
@@ -657,12 +657,12 @@ const Dashboard = () => {
       try {
         const base64Audio = await blobToBase64(file);
         const result = await transcribeAudio(base64Audio, file.type || 'audio/mp4');
-        
+
         setFullTranscript(result.transcript);
         fullSummaryRef.current = result.summary;
         setIsFinalizing(false);
         setCurrentTranscript("");
-        
+
         setNewRecordingTitle(file.name.split('.')[0] || `Imported ${format(new Date(), 'yyyy-MM-dd HH:mm')}`);
         setIsNamingModalOpen(true);
         setHasAutoShownModal(true);
@@ -706,7 +706,7 @@ const Dashboard = () => {
     if (mediaRecorder && isRecording && !isPaused) {
       clearAutoChunkTimer();
       setIsPaused(true);
-      mediaRecorder.stop(); 
+      mediaRecorder.stop();
     }
   };
 
@@ -734,10 +734,10 @@ const Dashboard = () => {
     if (mediaRecorder && isRecording) {
       clearAutoChunkTimer();
       const currentRecorder = mediaRecorder;
-      
+
       setIsRecording(false);
       setIsPaused(false);
-      
+
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
         streamRef.current = null;
@@ -759,7 +759,7 @@ const Dashboard = () => {
       <AnimatePresence>
         {isNamingModalOpen && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm px-4">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.9 }}
@@ -769,8 +769,8 @@ const Dashboard = () => {
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-bold text-on-surface-variant mb-2 uppercase tracking-widest">Recording Title</label>
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     value={newRecordingTitle}
                     onChange={(e) => {
                       setNewRecordingTitle(e.target.value);
@@ -789,13 +789,13 @@ const Dashboard = () => {
                   )}
                 </div>
                 <div className="flex gap-3 pt-4">
-                  <button 
+                  <button
                     onClick={() => setIsNamingModalOpen(false)}
                     className="flex-1 px-6 py-3 rounded-xl font-bold text-on-surface-variant hover:bg-surface-container-high transition-colors"
                   >
                     Discard
                   </button>
-                  <button 
+                  <button
                     onClick={() => saveToSupabase(newRecordingTitle)}
                     disabled={saveStatus === 'saving'}
                     className="flex-1 bg-primary text-white px-6 py-3 rounded-xl font-bold shadow-lg hover:shadow-primary/20 transition-all disabled:opacity-50"
@@ -810,7 +810,7 @@ const Dashboard = () => {
 
         {isResetModalOpen && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm px-4">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.9 }}
@@ -824,13 +824,13 @@ const Dashboard = () => {
                 Hành động này sẽ xóa toàn bộ dữ liệu hiện tại (transcript, audio). Bạn có chắc chắn muốn tiếp tục?
               </p>
               <div className="flex gap-3">
-                <button 
+                <button
                   onClick={() => setIsResetModalOpen(false)}
                   className="flex-1 px-6 py-3 rounded-xl font-bold text-on-surface-variant hover:bg-surface-container-high transition-colors"
                 >
                   Cancel
                 </button>
-                <button 
+                <button
                   onClick={resetRecording}
                   className="flex-1 bg-error text-white px-6 py-3 rounded-xl font-bold shadow-lg hover:shadow-error/20 transition-all"
                 >
@@ -850,7 +850,7 @@ const Dashboard = () => {
                 "absolute inset-0 bg-primary opacity-20 blur-3xl rounded-full transition-opacity",
                 isRecording && !isPaused ? "opacity-40 animate-pulse" : "group-hover:opacity-30"
               )}></div>
-              <button 
+              <button
                 onClick={isRecording ? stopRecording : startRecording}
                 disabled={isProcessing}
                 className={cn(
@@ -863,7 +863,7 @@ const Dashboard = () => {
             </div>
 
             {isRecording && (
-              <button 
+              <button
                 onClick={isPaused ? resumeRecording : pauseRecording}
                 disabled={isProcessing}
                 className={cn(
@@ -877,14 +877,14 @@ const Dashboard = () => {
 
             {!isRecording && (
               <>
-                <input 
-                  type="file" 
-                  ref={fileInputRef} 
-                  onChange={handleFileChange} 
-                  accept="audio/*,video/*,.m4a,.mp4" 
-                  className="hidden" 
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileChange}
+                  accept="audio/*,video/*,.m4a,.mp4"
+                  className="hidden"
                 />
-                <button 
+                <button
                   onClick={() => fileInputRef.current?.click()}
                   disabled={isProcessing}
                   className="w-16 h-16 rounded-full bg-surface-container-high text-on-surface flex items-center justify-center shadow-xl transition-all active:scale-90 hover:bg-surface-container-highest disabled:opacity-50"
@@ -908,11 +908,11 @@ const Dashboard = () => {
                     <h4 className="font-headline font-bold text-on-surface">{newRecordingTitle || "Chưa đặt tên"}</h4>
                   </div>
                 </div>
-                
+
                 <div className="flex items-center gap-2">
                   {saveStatus !== 'success' && (
                     <>
-                      <button 
+                      <button
                         onClick={() => setIsNamingModalOpen(true)}
                         disabled={isProcessing}
                         className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-xl text-xs font-bold shadow-lg shadow-primary/20 hover:scale-105 transition-all active:scale-95 disabled:opacity-50 disabled:hover:scale-100"
@@ -920,7 +920,7 @@ const Dashboard = () => {
                         <Save className="w-3.5 h-3.5" />
                         Lưu bản ghi
                       </button>
-                      <button 
+                      <button
                         onClick={() => setIsResetModalOpen(true)}
                         disabled={isProcessing}
                         className="flex items-center gap-2 px-4 py-2 bg-surface-container-high text-error rounded-xl text-xs font-bold hover:bg-error/10 transition-all active:scale-95 disabled:opacity-50"
@@ -931,7 +931,7 @@ const Dashboard = () => {
                     </>
                   )}
                   {fullTranscript.length > 0 && (
-                    <button 
+                    <button
                       onClick={() => exportToWord(newRecordingTitle || "Recording", fullTranscript)}
                       disabled={isProcessing}
                       className="flex items-center gap-2 px-4 py-2 bg-surface-container-high text-primary rounded-xl text-xs font-bold hover:bg-primary/10 transition-all active:scale-95 disabled:opacity-50"
@@ -942,7 +942,7 @@ const Dashboard = () => {
                   )}
                 </div>
               </div>
-              
+
               <div className="bg-surface-container-low p-4 rounded-xl border border-outline-variant/5">
                 <audio controls src={lastAudioUrl} className="w-full h-10" />
               </div>
@@ -960,13 +960,13 @@ const Dashboard = () => {
 
         <div className="flex items-center gap-1.5 h-12">
           {[...Array(8)].map((_, i) => (
-            <div 
-              key={i} 
+            <div
+              key={i}
               className={cn(
                 "w-1.5 rounded-full transition-all duration-300",
                 (isRecording || isProcessing) ? "bg-primary waveform-bar" : "bg-surface-container-highest h-2"
               )}
-              style={{ animationDelay: `${i * 0.1}s`, height: (isRecording || isProcessing) ? undefined : `${[2,4,3,6,4,2,5,3][i] * 4}px` }}
+              style={{ animationDelay: `${i * 0.1}s`, height: (isRecording || isProcessing) ? undefined : `${[2, 4, 3, 6, 4, 2, 5, 3][i] * 4}px` }}
             ></div>
           ))}
         </div>
@@ -987,10 +987,10 @@ const Dashboard = () => {
                 <span className={cn(
                   "text-[10px] px-2 py-0.5 rounded-md font-bold uppercase tracking-tighter",
                   saveStatus === 'saving' ? "bg-primary-fixed text-primary animate-pulse" :
-                  saveStatus === 'success' ? "bg-green-100 text-green-700" : "bg-error text-white"
+                    saveStatus === 'success' ? "bg-green-100 text-green-700" : "bg-error text-white"
                 )}>
-                  {saveStatus === 'saving' ? "Đang lưu..." : 
-                   saveStatus === 'success' ? "Đã lưu Admin" : "Lỗi lưu file"}
+                  {saveStatus === 'saving' ? "Đang lưu..." :
+                    saveStatus === 'success' ? "Đã lưu Admin" : "Lỗi lưu file"}
                 </span>
               )}
             </div>
@@ -1007,10 +1007,10 @@ const Dashboard = () => {
                         <span className={cn(
                           "text-[9px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider flex items-center gap-1.5 border",
                           modelIndicators.get(idx) === 'gemini' ? "bg-primary/5 text-primary border-primary/20" :
-                          modelIndicators.get(idx) === 'groq' ? "bg-[#f55036]/5 text-[#f55036] border-[#f55036]/20" :
-                          modelIndicators.get(idx) === 'openai' ? "bg-[#10a37f]/5 text-[#10a37f] border-[#10a37f]/20" :
-                          modelIndicators.get(idx) === 'claude' ? "bg-[#d97706]/5 text-[#d97706] border-[#d97706]/20" :
-                          "bg-surface-container text-on-surface-variant border-outline-variant/20"
+                            modelIndicators.get(idx) === 'groq' ? "bg-[#f55036]/5 text-[#f55036] border-[#f55036]/20" :
+                              modelIndicators.get(idx) === 'openai' ? "bg-[#10a37f]/5 text-[#10a37f] border-[#10a37f]/20" :
+                                modelIndicators.get(idx) === 'claude' ? "bg-[#d97706]/5 text-[#d97706] border-[#d97706]/20" :
+                                  "bg-surface-container text-on-surface-variant border-outline-variant/20"
                         )}>
                           <span className="w-1.5 h-1.5 rounded-full bg-current"></span>
                           {modelIndicators.get(idx)}
@@ -1019,28 +1019,28 @@ const Dashboard = () => {
                       </div>
                     )}
                     <div className="flex flex-col gap-1.5 group">
-                    <div className="flex items-center gap-3">
-                      <div className={cn(
-                        "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
-                        item.gender === 'Nam' ? "bg-blue-100 text-blue-700" : 
-                        item.gender === 'Nữ' ? "bg-pink-100 text-pink-700" : "bg-surface-container-highest text-on-surface-variant"
-                      )}>
-                        {item.speaker} {item.gender ? `• ${item.gender}` : ""}
+                      <div className="flex items-center gap-3">
+                        <div className={cn(
+                          "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
+                          item.gender === 'Nam' ? "bg-blue-100 text-blue-700" :
+                            item.gender === 'Nữ' ? "bg-pink-100 text-pink-700" : "bg-surface-container-highest text-on-surface-variant"
+                        )}>
+                          {item.speaker} {item.gender ? `• ${item.gender}` : ""}
+                        </div>
+                        <span className="text-[10px] font-mono text-on-surface-variant opacity-40">{item.timestamp}</span>
                       </div>
-                      <span className="text-[10px] font-mono text-on-surface-variant opacity-40">{item.timestamp}</span>
+                      <p className={cn(
+                        "text-lg font-body transition-colors",
+                        item.isUncertain ? "text-error font-medium italic" : "text-on-surface"
+                      )}>
+                        {item.text}
+                        {item.isUncertain && (
+                          <span className="ml-2 inline-flex items-center gap-1 text-[9px] bg-error/10 text-error px-1.5 py-0.5 rounded border border-error/20 not-italic font-bold uppercase tracking-tighter">
+                            AI không chắc chắn
+                          </span>
+                        )}
+                      </p>
                     </div>
-                    <p className={cn(
-                      "text-lg font-body transition-colors",
-                      item.isUncertain ? "text-error font-medium italic" : "text-on-surface"
-                    )}>
-                      {item.text}
-                      {item.isUncertain && (
-                        <span className="ml-2 inline-flex items-center gap-1 text-[9px] bg-error/10 text-error px-1.5 py-0.5 rounded border border-error/20 not-italic font-bold uppercase tracking-tighter">
-                          AI không chắc chắn
-                        </span>
-                      )}
-                    </p>
-                  </div>
                   </React.Fragment>
                 ))}
               </div>
@@ -1090,7 +1090,7 @@ const Dashboard = () => {
                   <h3 className="text-2xl font-headline font-bold text-on-surface">Chào mừng bạn đến với Sonic Lens</h3>
                   <p className="text-on-surface-variant max-w-md mx-auto">Hệ thống ghi âm và chuyển đổi giọng nói thông minh sử dụng công nghệ AI tiên tiến.</p>
                 </div>
-                
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full max-w-2xl text-left">
                   <div className="bg-surface-container-low p-5 rounded-xl border border-outline-variant/10 flex gap-4">
                     <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
@@ -1101,7 +1101,7 @@ const Dashboard = () => {
                       <p className="text-xs text-on-surface-variant leading-relaxed">Nhấn nút Microphone để bắt đầu ghi âm. AI sẽ tự động nhận diện người nói và chuyển đổi thành văn bản theo thời gian thực.</p>
                     </div>
                   </div>
-                  
+
                   <div className="bg-surface-container-low p-5 rounded-xl border border-outline-variant/10 flex gap-4">
                     <div className="w-10 h-10 rounded-full bg-secondary/10 flex items-center justify-center shrink-0">
                       <Upload className="w-5 h-5 text-secondary" />
@@ -1111,7 +1111,7 @@ const Dashboard = () => {
                       <p className="text-xs text-on-surface-variant leading-relaxed">Bạn có thể tải lên các file âm thanh hoặc video (.mp3, .mp4, .m4a) để AI phân tích và tạo transcript.</p>
                     </div>
                   </div>
-                  
+
                   <div className="bg-surface-container-low p-5 rounded-xl border border-outline-variant/10 flex gap-4">
                     <div className="w-10 h-10 rounded-full bg-tertiary/10 flex items-center justify-center shrink-0">
                       <FileText className="w-5 h-5 text-tertiary" />
@@ -1121,7 +1121,7 @@ const Dashboard = () => {
                       <p className="text-xs text-on-surface-variant leading-relaxed">Sau khi ghi âm xong, bạn có thể tóm tắt nội dung bằng AI và xuất transcript ra file Word chuyên nghiệp.</p>
                     </div>
                   </div>
-                  
+
                   <div className="bg-surface-container-low p-5 rounded-xl border border-outline-variant/10 flex gap-4">
                     <div className="w-10 h-10 rounded-full bg-primary-fixed/20 flex items-center justify-center shrink-0">
                       <ShieldCheck className="text-primary w-5 h-5" />
@@ -1201,31 +1201,31 @@ const AdminLogin = ({ onLogin }: { onLogin: (remember: boolean) => void }) => {
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="space-y-2">
               <label className="block font-headline text-sm font-bold text-on-surface-variant ml-1">Tên đăng nhập</label>
-              <input 
-                type="text" 
+              <input
+                type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="block w-full px-4 py-3 bg-surface-container-high border-none rounded-lg focus:bg-surface-container-lowest focus:ring-2 focus:ring-primary/20 transition-all font-body" 
-                placeholder="admin" 
-                required 
+                className="block w-full px-4 py-3 bg-surface-container-high border-none rounded-lg focus:bg-surface-container-lowest focus:ring-2 focus:ring-primary/20 transition-all font-body"
+                placeholder="admin"
+                required
               />
             </div>
             <div className="space-y-2">
               <label className="block font-headline text-sm font-bold text-on-surface-variant ml-1">Mật khẩu</label>
-              <input 
-                type="password" 
+              <input
+                type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="block w-full px-4 py-3 bg-surface-container-high border-none rounded-lg focus:bg-surface-container-lowest focus:ring-2 focus:ring-primary/20 transition-all font-body" 
-                placeholder="••••••••" 
-                required 
+                className="block w-full px-4 py-3 bg-surface-container-high border-none rounded-lg focus:bg-surface-container-lowest focus:ring-2 focus:ring-primary/20 transition-all font-body"
+                placeholder="••••••••"
+                required
               />
             </div>
             {error && <p className="text-error text-sm font-medium">{error}</p>}
             <div className="flex items-center gap-2 ml-1">
-              <input 
-                type="checkbox" 
-                id="rememberMe" 
+              <input
+                type="checkbox"
+                id="rememberMe"
                 checked={rememberMe}
                 onChange={(e) => setRememberMe(e.target.checked)}
                 className="w-4 h-4 rounded border-outline-variant text-primary focus:ring-primary"
@@ -1292,7 +1292,7 @@ const AdminDashboard = () => {
       .from('recordings')
       .update({ is_important: !current })
       .eq('id', id);
-    
+
     if (!error) {
       setRecordings(prev => prev.map(r => r.id === id ? { ...r, is_important: !current } : r));
       if (selectedRecording?.id === id) {
@@ -1303,10 +1303,10 @@ const AdminDashboard = () => {
 
   const deleteMultipleRecordings = async () => {
     if (selectedIds.length === 0 && !itemToDelete) return;
-    
+
     const idsToDelete = itemToDelete ? [itemToDelete.id] : selectedIds;
     const itemsToDelete = recordings.filter(r => idsToDelete.includes(r.id));
-    
+
     setIsActionLoading(true);
     try {
       // Extract filenames from URLs
@@ -1329,7 +1329,7 @@ const AdminDashboard = () => {
         .from('recordings')
         .delete()
         .in('id', idsToDelete);
-      
+
       if (!dbError) {
         setRecordings(prev => prev.filter(r => !idsToDelete.includes(r.id)));
         if (selectedRecording && idsToDelete.includes(selectedRecording.id)) {
@@ -1374,7 +1374,7 @@ const AdminDashboard = () => {
         .from('recordings')
         .update({ title: editTitleValue.trim() })
         .eq('id', itemToEdit);
-      
+
       if (!error) {
         setRecordings(prev => prev.map(r => r.id === itemToEdit ? { ...r, title: editTitleValue.trim() } : r));
         if (selectedRecording?.id === itemToEdit) {
@@ -1444,7 +1444,7 @@ const AdminDashboard = () => {
           </div>
         </div>
         <nav className="flex-1 flex flex-col gap-1">
-          <button 
+          <button
             onClick={() => setActiveTab('recordings')}
             className={cn(
               "rounded-lg shadow-sm font-semibold flex items-center gap-3 px-4 py-3 transition-all duration-200",
@@ -1454,7 +1454,7 @@ const AdminDashboard = () => {
             <Mic className="w-5 h-5" />
             <span className="font-body text-sm font-medium">Bản ghi âm</span>
           </button>
-          <button 
+          <button
             onClick={() => setActiveTab('api')}
             className={cn(
               "rounded-lg shadow-sm font-semibold flex items-center gap-3 px-4 py-3 transition-all duration-200",
@@ -1466,11 +1466,11 @@ const AdminDashboard = () => {
           </button>
         </nav>
         <div className="mt-auto border-t border-outline-variant/30 pt-4">
-          <button 
+          <button
             onClick={() => {
               localStorage.removeItem("isAdminAuthenticated");
               window.location.reload();
-            }} 
+            }}
             className="text-on-surface-variant hover:bg-white/50 w-full rounded-lg flex items-center gap-3 px-4 py-3 transition-all duration-200"
           >
             <LogOut className="w-5 h-5" />
@@ -1490,8 +1490,8 @@ const AdminDashboard = () => {
                 </div>
                 <div className="relative w-full md:w-72">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-on-surface-variant opacity-50" />
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     placeholder="Tìm kiếm bản ghi..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
@@ -1505,13 +1505,13 @@ const AdminDashboard = () => {
                   {(() => {
                     const filteredRecordings = recordings.filter(r => r.title.toLowerCase().includes(searchQuery.toLowerCase()));
                     const isAllFilteredSelected = filteredRecordings.length > 0 && filteredRecordings.every(r => selectedIds.includes(r.id));
-                    
+
                     return (
                       <>
                         <div className="flex items-center justify-between px-2">
                           <div className="flex items-center gap-2">
-                            <input 
-                              type="checkbox" 
+                            <input
+                              type="checkbox"
                               checked={isAllFilteredSelected}
                               onChange={(e) => {
                                 if (e.target.checked) {
@@ -1529,7 +1529,7 @@ const AdminDashboard = () => {
                             </span>
                           </div>
                           {selectedIds.length > 0 && (
-                            <button 
+                            <button
                               onClick={() => {
                                 setItemToDelete(null);
                                 setIsDeleteModalOpen(true);
@@ -1548,15 +1548,15 @@ const AdminDashboard = () => {
                             <div className="p-4 text-center text-on-surface-variant">Không tìm thấy bản ghi nào.</div>
                           ) : (
                             filteredRecordings.map(rec => (
-                              <div 
+                              <div
                                 key={rec.id}
                                 className={cn(
                                   "p-4 rounded-lg shadow-sm cursor-pointer transition-all flex items-start gap-3",
                                   selectedRecording?.id === rec.id ? "bg-white border-l-4 border-primary" : "hover:bg-surface-container-high"
                                 )}
                               >
-                                <input 
-                                  type="checkbox" 
+                                <input
+                                  type="checkbox"
                                   checked={selectedIds.includes(rec.id)}
                                   onClick={(e) => e.stopPropagation()}
                                   onChange={(e) => {
@@ -1604,7 +1604,7 @@ const AdminDashboard = () => {
                             <div>
                               <div className="flex items-center gap-2">
                                 <h2 className="text-xl font-headline font-extrabold text-on-surface">{selectedRecording.title}</h2>
-                                <button 
+                                <button
                                   onClick={() => {
                                     setItemToEdit(selectedRecording.id);
                                     setEditTitleValue(selectedRecording.title);
@@ -1622,7 +1622,7 @@ const AdminDashboard = () => {
                             </div>
                           </div>
                           <div className="flex gap-2">
-                            <button 
+                            <button
                               onClick={() => exportToWord(selectedRecording.title, selectedRecording.transcript)}
                               className="p-2 text-on-surface-variant hover:text-primary transition-colors"
                               title="Xuất Word"
@@ -1632,20 +1632,20 @@ const AdminDashboard = () => {
                             <button onClick={() => toggleImportant(selectedRecording.id, selectedRecording.is_important)} className={cn("p-2 transition-colors", selectedRecording.is_important ? "text-yellow-500" : "text-on-surface-variant hover:text-yellow-500")}>
                               <Star className={cn("w-5 h-5", selectedRecording.is_important && "fill-current")} />
                             </button>
-                            <button 
+                            <button
                               onClick={() => {
                                 setItemToDelete(selectedRecording);
                                 setIsDeleteModalOpen(true);
-                              }} 
+                              }}
                               className="p-2 text-on-surface-variant hover:text-error transition-colors"
                             >
                               <Trash2 className="w-5 h-5" />
                             </button>
                           </div>
                         </div>
-                        
+
                         <audio controls src={selectedRecording.audio_url} className="w-full mb-4" />
-                        
+
                         {selectedRecording.summary && (
                           <div className="bg-primary-fixed/20 p-4 rounded-lg border border-primary-fixed">
                             <h4 className="font-headline font-bold text-sm text-primary mb-1 uppercase tracking-wider">Tóm tắt AI</h4>
@@ -1677,8 +1677,8 @@ const AdminDashboard = () => {
                                 <div className="flex items-center gap-2 mb-1.5">
                                   <span className={cn(
                                     "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
-                                    item.gender === 'Nam' ? "bg-blue-100 text-blue-700" : 
-                                    item.gender === 'Nữ' ? "bg-pink-100 text-pink-700" : "bg-surface-container-highest text-on-surface-variant"
+                                    item.gender === 'Nam' ? "bg-blue-100 text-blue-700" :
+                                      item.gender === 'Nữ' ? "bg-pink-100 text-pink-700" : "bg-surface-container-highest text-on-surface-variant"
                                   )}>
                                     {item.speaker} {item.gender ? `• ${item.gender}` : ""}
                                   </span>
@@ -1740,8 +1740,8 @@ const AdminDashboard = () => {
                           </span>
                         </div>
                         <p className="text-xs text-on-surface-variant mt-1 leading-relaxed max-w-md">
-                          {enableMultiModel 
-                            ? 'Tu dong thu cac provider theo thu tu uu tien. Neu model A loi se tu dong chuyen sang model B.' 
+                          {enableMultiModel
+                            ? 'Tu dong thu cac provider theo thu tu uu tien. Neu model A loi se tu dong chuyen sang model B.'
                             : 'Chi su dung duy nhat 1 provider da chon ben duoi.'}
                         </p>
                         {enableMultiModel && (
@@ -1779,230 +1779,238 @@ const AdminDashboard = () => {
 
                   {/* Provider selector (only shown when multi-model is OFF) */}
                   {!enableMultiModel && (
-                  <div className="grid grid-cols-2 gap-3 mb-8">
-                    {([
-                      { id: 'gemini' as AIProvider, label: 'Google Gemini', color: 'primary', desc: 'Multimodal (Free)', icon: (
-                        <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" fill="currentColor">
-                          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z" />
-                        </svg>
-                      )},
-                      { id: 'openai' as AIProvider, label: 'OpenAI / ChatGPT', color: '#10a37f', desc: 'Whisper + GPT-4o', icon: (
-                        <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" fill="currentColor">
-                          <path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073zM13.26 22.43a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.795.795 0 0 0 .392-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494zM3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.676l5.815 3.355-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.896zm16.597 3.855l-5.843-3.37 2.02-1.167a.076.076 0 0 1 .071 0l4.83 2.786a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.402-.676zm2.01-3.023l-.141-.085-4.774-2.782a.776.776 0 0 0-.785 0L9.409 9.23V6.897a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135l-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08-4.778 2.758a.795.795 0 0 0-.393.681zm1.097-2.365l2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5z" />
-                        </svg>
-                      )},
-                      { id: 'groq' as AIProvider, label: 'Groq', color: '#f55036', desc: 'Whisper + Llama 3 (Free)', icon: (
-                        <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" fill="currentColor">
-                          <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      )},
-                      { id: 'claude' as AIProvider, label: 'Claude (Anthropic)', color: '#d97706', desc: 'Sonnet 4 (Paid)', icon: (
-                        <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" fill="currentColor">
-                          <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z"/>
-                        </svg>
-                      )},
-                    ]).map(({ id, label, color, desc, icon }) => {
-                      const isActive = aiProvider === id;
-                      const borderColor = isActive
-                        ? id === 'gemini' ? 'border-primary bg-primary/5 text-primary'
-                        : id === 'openai' ? 'border-[#10a37f] bg-[#10a37f]/5 text-[#10a37f]'
-                        : id === 'groq' ? 'border-[#f55036] bg-[#f55036]/5 text-[#f55036]'
-                        : 'border-[#d97706] bg-[#d97706]/5 text-[#d97706]'
-                        : 'border-surface-container-high text-on-surface-variant hover:border-outline-variant';
-                      return (
-                        <button
-                          key={id}
-                          onClick={() => setAIProvider(id)}
-                          className={cn(
-                            "flex flex-col items-center justify-center gap-1.5 px-4 py-4 rounded-xl border-2 font-bold text-sm transition-all duration-200",
-                            borderColor
-                          )}
-                        >
-                          <div className="flex items-center gap-2">
-                            {icon}
-                            <span className="text-xs font-bold">{label}</span>
-                            {isActive && <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />}
-                          </div>
-                          <span className={cn("text-[10px] font-medium", isActive ? "opacity-80" : "text-on-surface-variant")}>{desc}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
+                    <div className="grid grid-cols-2 gap-3 mb-8">
+                      {([
+                        {
+                          id: 'gemini' as AIProvider, label: 'Google Gemini', color: 'primary', desc: 'Multimodal (Free)', icon: (
+                            <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" fill="currentColor">
+                              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z" />
+                            </svg>
+                          )
+                        },
+                        {
+                          id: 'openai' as AIProvider, label: 'OpenAI / ChatGPT', color: '#10a37f', desc: 'Whisper + GPT-4o', icon: (
+                            <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" fill="currentColor">
+                              <path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073zM13.26 22.43a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.795.795 0 0 0 .392-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494zM3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.676l5.815 3.355-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.896zm16.597 3.855l-5.843-3.37 2.02-1.167a.076.076 0 0 1 .071 0l4.83 2.786a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.402-.676zm2.01-3.023l-.141-.085-4.774-2.782a.776.776 0 0 0-.785 0L9.409 9.23V6.897a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135l-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08-4.778 2.758a.795.795 0 0 0-.393.681zm1.097-2.365l2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5z" />
+                            </svg>
+                          )
+                        },
+                        {
+                          id: 'groq' as AIProvider, label: 'Groq', color: '#f55036', desc: 'Whisper + Llama 3 (Free)', icon: (
+                            <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" fill="currentColor">
+                              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          )
+                        },
+                        {
+                          id: 'claude' as AIProvider, label: 'Claude (Anthropic)', color: '#d97706', desc: 'Sonnet 4 (Paid)', icon: (
+                            <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" fill="currentColor">
+                              <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z" />
+                            </svg>
+                          )
+                        },
+                      ]).map(({ id, label, color, desc, icon }) => {
+                        const isActive = aiProvider === id;
+                        const borderColor = isActive
+                          ? id === 'gemini' ? 'border-primary bg-primary/5 text-primary'
+                            : id === 'openai' ? 'border-[#10a37f] bg-[#10a37f]/5 text-[#10a37f]'
+                              : id === 'groq' ? 'border-[#f55036] bg-[#f55036]/5 text-[#f55036]'
+                                : 'border-[#d97706] bg-[#d97706]/5 text-[#d97706]'
+                          : 'border-surface-container-high text-on-surface-variant hover:border-outline-variant';
+                        return (
+                          <button
+                            key={id}
+                            onClick={() => setAIProvider(id)}
+                            className={cn(
+                              "flex flex-col items-center justify-center gap-1.5 px-4 py-4 rounded-xl border-2 font-bold text-sm transition-all duration-200",
+                              borderColor
+                            )}
+                          >
+                            <div className="flex items-center gap-2">
+                              {icon}
+                              <span className="text-xs font-bold">{label}</span>
+                              {isActive && <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />}
+                            </div>
+                            <span className={cn("text-[10px] font-medium", isActive ? "opacity-80" : "text-on-surface-variant")}>{desc}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
 
                   {/* Provider config panels (only when multi-model is OFF) */}
                   {!enableMultiModel && (
-                  <>
-                  {/* Gemini: show env status, no editable key */}
-                  {aiProvider === 'gemini' && (
-                    <div className="bg-primary/5 border border-primary/15 rounded-xl p-5 flex items-start gap-4">
-                      <div className={cn("w-10 h-10 rounded-full flex items-center justify-center shrink-0", process.env.GEMINI_API_KEY ? "bg-green-100" : "bg-error/10")}>
-                        <ShieldCheck className={cn("w-5 h-5", process.env.GEMINI_API_KEY ? "text-green-600" : "text-error")} />
-                      </div>
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-1">
-                          <p className="text-sm font-bold text-on-surface">Gemini API Key</p>
-                          <span className={cn("text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider", process.env.GEMINI_API_KEY ? "bg-green-100 text-green-700" : "bg-error/10 text-error")}>
-                            {process.env.GEMINI_API_KEY ? 'Đã cấu hình' : 'Chưa có key'}
-                          </span>
+                    <>
+                      {/* Gemini: show env status, no editable key */}
+                      {aiProvider === 'gemini' && (
+                        <div className="bg-primary/5 border border-primary/15 rounded-xl p-5 flex items-start gap-4">
+                          <div className={cn("w-10 h-10 rounded-full flex items-center justify-center shrink-0", process.env.GEMINI_API_KEY ? "bg-green-100" : "bg-error/10")}>
+                            <ShieldCheck className={cn("w-5 h-5", process.env.GEMINI_API_KEY ? "text-green-600" : "text-error")} />
+                          </div>
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <p className="text-sm font-bold text-on-surface">Gemini API Key</p>
+                              <span className={cn("text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider", process.env.GEMINI_API_KEY ? "bg-green-100 text-green-700" : "bg-error/10 text-error")}>
+                                {process.env.GEMINI_API_KEY ? 'Đã cấu hình' : 'Chưa có key'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-on-surface-variant">Key được đọc từ biến môi trường <code className="bg-surface-container px-1 rounded">GEMINI_API_KEY</code>. Model và prompt giữ nguyên như cấu hình gốc.</p>
+                            <a
+                              href={GEMINI_API_KEYS_URL}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 mt-3 text-xs font-bold text-primary hover:underline"
+                            >
+                              Lấy API Key tại Google AI Studio <ExternalLink className="w-3 h-3" />
+                            </a>
+                          </div>
                         </div>
-                        <p className="text-xs text-on-surface-variant">Key được đọc từ biến môi trường <code className="bg-surface-container px-1 rounded">GEMINI_API_KEY</code>. Model và prompt giữ nguyên như cấu hình gốc.</p>
-                        <a
-                          href={GEMINI_API_KEYS_URL}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 mt-3 text-xs font-bold text-primary hover:underline"
-                        >
-                          Lấy API Key tại Google AI Studio <ExternalLink className="w-3 h-3" />
-                        </a>
-                      </div>
-                    </div>
-                  )}
+                      )}
 
-                  {/* OpenAI: link + manual key input */}
-                  {aiProvider === 'openai' && (
-                    <div className="space-y-4">
-                      <div className="bg-[#10a37f]/5 border border-[#10a37f]/20 rounded-xl p-5 flex items-start gap-4">
-                        <div className="w-10 h-10 rounded-full bg-[#10a37f]/10 flex items-center justify-center shrink-0">
-                          <ExternalLink className="w-5 h-5 text-[#10a37f]" />
+                      {/* OpenAI: link + manual key input */}
+                      {aiProvider === 'openai' && (
+                        <div className="space-y-4">
+                          <div className="bg-[#10a37f]/5 border border-[#10a37f]/20 rounded-xl p-5 flex items-start gap-4">
+                            <div className="w-10 h-10 rounded-full bg-[#10a37f]/10 flex items-center justify-center shrink-0">
+                              <ExternalLink className="w-5 h-5 text-[#10a37f]" />
+                            </div>
+                            <div className="flex-1">
+                              <p className="text-sm font-bold text-on-surface">Liên kết OpenAI Platform</p>
+                              <p className="text-xs text-on-surface-variant mt-1 leading-relaxed">Tạo API Key từ trang quản lý OpenAI để kết nối Sonic Lens. Lưu ý: cần nạp credit riêng tại platform.openai.com (tối thiểu $5), không dùng chung với ChatGPT Plus/Business.</p>
+                              <a
+                                href={OPENAI_API_KEYS_URL}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-[#10a37f] text-white text-xs font-bold rounded-lg hover:bg-[#0d8a6a] transition-colors"
+                              >
+                                Mở trang OpenAI API Keys <ExternalLink className="w-3.5 h-3.5" />
+                              </a>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="flex items-center justify-between mb-2">
+                              <label htmlFor="openai-key-input" className="text-sm font-bold text-on-surface-variant">OpenAI API Key</label>
+                              <span className="text-[10px] bg-surface-container px-2 py-0.5 rounded font-bold text-on-surface-variant uppercase tracking-wider">Whisper + GPT-4o mini</span>
+                            </div>
+                            <div className="relative">
+                              <input
+                                id="openai-key-input"
+                                type={showOpenaiKey ? 'text' : 'password'}
+                                value={openaiKey}
+                                onChange={(e) => setOpenaiKey(e.target.value)}
+                                placeholder="sk-..."
+                                className="w-full bg-surface-container-low border border-surface-container-high rounded-xl px-4 py-3 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-[#10a37f] transition-all font-mono"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowOpenaiKey(!showOpenaiKey)}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface transition-colors"
+                              >
+                                {showOpenaiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                              </button>
+                            </div>
+                            <p className="mt-2 text-xs text-on-surface-variant">Sử dụng <strong>Whisper</strong> để nhận diện giọng nói và <strong>GPT-4o mini</strong> để phân tích transcript có speaker.</p>
+                          </div>
                         </div>
-                        <div className="flex-1">
-                          <p className="text-sm font-bold text-on-surface">Liên kết OpenAI Platform</p>
-                          <p className="text-xs text-on-surface-variant mt-1 leading-relaxed">Tạo API Key từ trang quản lý OpenAI để kết nối Sonic Lens. Lưu ý: cần nạp credit riêng tại platform.openai.com (tối thiểu $5), không dùng chung với ChatGPT Plus/Business.</p>
-                          <a
-                            href={OPENAI_API_KEYS_URL}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-[#10a37f] text-white text-xs font-bold rounded-lg hover:bg-[#0d8a6a] transition-colors"
-                          >
-                            Mở trang OpenAI API Keys <ExternalLink className="w-3.5 h-3.5" />
-                          </a>
-                        </div>
-                      </div>
-                      <div>
-                        <div className="flex items-center justify-between mb-2">
-                          <label htmlFor="openai-key-input" className="text-sm font-bold text-on-surface-variant">OpenAI API Key</label>
-                          <span className="text-[10px] bg-surface-container px-2 py-0.5 rounded font-bold text-on-surface-variant uppercase tracking-wider">Whisper + GPT-4o mini</span>
-                        </div>
-                        <div className="relative">
-                          <input
-                            id="openai-key-input"
-                            type={showOpenaiKey ? 'text' : 'password'}
-                            value={openaiKey}
-                            onChange={(e) => setOpenaiKey(e.target.value)}
-                            placeholder="sk-..."
-                            className="w-full bg-surface-container-low border border-surface-container-high rounded-xl px-4 py-3 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-[#10a37f] transition-all font-mono"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowOpenaiKey(!showOpenaiKey)}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface transition-colors"
-                          >
-                            {showOpenaiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                          </button>
-                        </div>
-                        <p className="mt-2 text-xs text-on-surface-variant">Sử dụng <strong>Whisper</strong> để nhận diện giọng nói và <strong>GPT-4o mini</strong> để phân tích transcript có speaker.</p>
-                      </div>
-                    </div>
-                  )}
+                      )}
 
-                  {/* Groq: link + manual key input */}
-                  {aiProvider === 'groq' && (
-                    <div className="space-y-4">
-                      <div className="bg-[#f55036]/5 border border-[#f55036]/20 rounded-xl p-5 flex items-start gap-4">
-                        <div className="w-10 h-10 rounded-full bg-[#f55036]/10 flex items-center justify-center shrink-0">
-                          <ExternalLink className="w-5 h-5 text-[#f55036]" />
+                      {/* Groq: link + manual key input */}
+                      {aiProvider === 'groq' && (
+                        <div className="space-y-4">
+                          <div className="bg-[#f55036]/5 border border-[#f55036]/20 rounded-xl p-5 flex items-start gap-4">
+                            <div className="w-10 h-10 rounded-full bg-[#f55036]/10 flex items-center justify-center shrink-0">
+                              <ExternalLink className="w-5 h-5 text-[#f55036]" />
+                            </div>
+                            <div className="flex-1">
+                              <p className="text-sm font-bold text-on-surface">Groq Cloud Console</p>
+                              <p className="text-xs text-on-surface-variant mt-1 leading-relaxed">Groq cung cap API <strong>mien phi</strong> voi toc do cuc nhanh. Bao gom Whisper Large v3 (speech-to-text) va Llama 3.3 70B (structuring). Khong can nap credit.</p>
+                              <a
+                                href={GROQ_API_KEYS_URL}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-[#f55036] text-white text-xs font-bold rounded-lg hover:bg-[#d44530] transition-colors"
+                              >
+                                Tao API Key tai Groq Console <ExternalLink className="w-3.5 h-3.5" />
+                              </a>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="flex items-center justify-between mb-2">
+                              <label htmlFor="groq-key-input" className="text-sm font-bold text-on-surface-variant">Groq API Key</label>
+                              <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold uppercase tracking-wider">Free Tier</span>
+                            </div>
+                            <div className="relative">
+                              <input
+                                id="groq-key-input"
+                                type={showGroqKey ? 'text' : 'password'}
+                                value={groqKey}
+                                onChange={(e) => setGroqKey(e.target.value)}
+                                placeholder="gsk_..."
+                                className="w-full bg-surface-container-low border border-surface-container-high rounded-xl px-4 py-3 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-[#f55036] transition-all font-mono"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowGroqKey(!showGroqKey)}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface transition-colors"
+                              >
+                                {showGroqKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                              </button>
+                            </div>
+                            <p className="mt-2 text-xs text-on-surface-variant">Su dung <strong>Whisper Large v3</strong> (speech-to-text) va <strong>Llama 3.3 70B</strong> (structuring). Hoan toan mien phi.</p>
+                          </div>
                         </div>
-                        <div className="flex-1">
-                          <p className="text-sm font-bold text-on-surface">Groq Cloud Console</p>
-                          <p className="text-xs text-on-surface-variant mt-1 leading-relaxed">Groq cung cap API <strong>mien phi</strong> voi toc do cuc nhanh. Bao gom Whisper Large v3 (speech-to-text) va Llama 3.3 70B (structuring). Khong can nap credit.</p>
-                          <a
-                            href={GROQ_API_KEYS_URL}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-[#f55036] text-white text-xs font-bold rounded-lg hover:bg-[#d44530] transition-colors"
-                          >
-                            Tao API Key tai Groq Console <ExternalLink className="w-3.5 h-3.5" />
-                          </a>
-                        </div>
-                      </div>
-                      <div>
-                        <div className="flex items-center justify-between mb-2">
-                          <label htmlFor="groq-key-input" className="text-sm font-bold text-on-surface-variant">Groq API Key</label>
-                          <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold uppercase tracking-wider">Free Tier</span>
-                        </div>
-                        <div className="relative">
-                          <input
-                            id="groq-key-input"
-                            type={showGroqKey ? 'text' : 'password'}
-                            value={groqKey}
-                            onChange={(e) => setGroqKey(e.target.value)}
-                            placeholder="gsk_..."
-                            className="w-full bg-surface-container-low border border-surface-container-high rounded-xl px-4 py-3 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-[#f55036] transition-all font-mono"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowGroqKey(!showGroqKey)}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface transition-colors"
-                          >
-                            {showGroqKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                          </button>
-                        </div>
-                        <p className="mt-2 text-xs text-on-surface-variant">Su dung <strong>Whisper Large v3</strong> (speech-to-text) va <strong>Llama 3.3 70B</strong> (structuring). Hoan toan mien phi.</p>
-                      </div>
-                    </div>
-                  )}
+                      )}
 
-                  {/* Claude: link + manual key input */}
-                  {aiProvider === 'claude' && (
-                    <div className="space-y-4">
-                      <div className="bg-[#d97706]/5 border border-[#d97706]/20 rounded-xl p-5 flex items-start gap-4">
-                        <div className="w-10 h-10 rounded-full bg-[#d97706]/10 flex items-center justify-center shrink-0">
-                          <ExternalLink className="w-5 h-5 text-[#d97706]" />
+                      {/* Claude: link + manual key input */}
+                      {aiProvider === 'claude' && (
+                        <div className="space-y-4">
+                          <div className="bg-[#d97706]/5 border border-[#d97706]/20 rounded-xl p-5 flex items-start gap-4">
+                            <div className="w-10 h-10 rounded-full bg-[#d97706]/10 flex items-center justify-center shrink-0">
+                              <ExternalLink className="w-5 h-5 text-[#d97706]" />
+                            </div>
+                            <div className="flex-1">
+                              <p className="text-sm font-bold text-on-surface">Anthropic Console</p>
+                              <p className="text-xs text-on-surface-variant mt-1 leading-relaxed">Claude su dung API tra phi cua Anthropic. Can nap credit tai console.anthropic.com. <strong>Luu y:</strong> Claude khong ho tro doc audio truc tiep, can ket hop voi Groq (mien phi) hoac OpenAI de chuyen am thanh thanh van ban truoc.</p>
+                              <a
+                                href={CLAUDE_API_KEYS_URL}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-[#d97706] text-white text-xs font-bold rounded-lg hover:bg-[#b45309] transition-colors"
+                              >
+                                Tao API Key tai Anthropic <ExternalLink className="w-3.5 h-3.5" />
+                              </a>
+                            </div>
+                          </div>
+                          <div>
+                            <div className="flex items-center justify-between mb-2">
+                              <label htmlFor="claude-key-input" className="text-sm font-bold text-on-surface-variant">Claude API Key</label>
+                              <span className="text-[10px] bg-[#d97706]/10 text-[#d97706] px-2 py-0.5 rounded font-bold uppercase tracking-wider">Paid</span>
+                            </div>
+                            <div className="relative">
+                              <input
+                                id="claude-key-input"
+                                type={showClaudeKey ? 'text' : 'password'}
+                                value={claudeKey}
+                                onChange={(e) => setClaudeKey(e.target.value)}
+                                placeholder="sk-ant-..."
+                                className="w-full bg-surface-container-low border border-surface-container-high rounded-xl px-4 py-3 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-[#d97706] transition-all font-mono"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowClaudeKey(!showClaudeKey)}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface transition-colors"
+                              >
+                                {showClaudeKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                              </button>
+                            </div>
+                            <p className="mt-2 text-xs text-on-surface-variant">Su dung <strong>Claude Sonnet 4</strong> de phan tich transcript. Can co <strong>Groq API Key</strong> (mien phi) hoac <strong>OpenAI Key</strong> de chuyen am thanh thanh van ban.</p>
+                            {!groqKey && !openaiKey && (
+                              <p className="mt-2 text-xs text-error font-bold">Chua co Groq hoac OpenAI API Key cho buoc speech-to-text. Vui long them Groq key (mien phi) truoc.</p>
+                            )}
+                          </div>
                         </div>
-                        <div className="flex-1">
-                          <p className="text-sm font-bold text-on-surface">Anthropic Console</p>
-                          <p className="text-xs text-on-surface-variant mt-1 leading-relaxed">Claude su dung API tra phi cua Anthropic. Can nap credit tai console.anthropic.com. <strong>Luu y:</strong> Claude khong ho tro doc audio truc tiep, can ket hop voi Groq (mien phi) hoac OpenAI de chuyen am thanh thanh van ban truoc.</p>
-                          <a
-                            href={CLAUDE_API_KEYS_URL}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-[#d97706] text-white text-xs font-bold rounded-lg hover:bg-[#b45309] transition-colors"
-                          >
-                            Tao API Key tai Anthropic <ExternalLink className="w-3.5 h-3.5" />
-                          </a>
-                        </div>
-                      </div>
-                      <div>
-                        <div className="flex items-center justify-between mb-2">
-                          <label htmlFor="claude-key-input" className="text-sm font-bold text-on-surface-variant">Claude API Key</label>
-                          <span className="text-[10px] bg-[#d97706]/10 text-[#d97706] px-2 py-0.5 rounded font-bold uppercase tracking-wider">Paid</span>
-                        </div>
-                        <div className="relative">
-                          <input
-                            id="claude-key-input"
-                            type={showClaudeKey ? 'text' : 'password'}
-                            value={claudeKey}
-                            onChange={(e) => setClaudeKey(e.target.value)}
-                            placeholder="sk-ant-..."
-                            className="w-full bg-surface-container-low border border-surface-container-high rounded-xl px-4 py-3 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-[#d97706] transition-all font-mono"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowClaudeKey(!showClaudeKey)}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface transition-colors"
-                          >
-                            {showClaudeKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                          </button>
-                        </div>
-                        <p className="mt-2 text-xs text-on-surface-variant">Su dung <strong>Claude Sonnet 4</strong> de phan tich transcript. Can co <strong>Groq API Key</strong> (mien phi) hoac <strong>OpenAI Key</strong> de chuyen am thanh thanh van ban.</p>
-                        {!groqKey && !openaiKey && (
-                          <p className="mt-2 text-xs text-error font-bold">Chua co Groq hoac OpenAI API Key cho buoc speech-to-text. Vui long them Groq key (mien phi) truoc.</p>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  </>
+                      )}
+                    </>
                   )}
 
                   {/* Multi-model: show ALL key inputs at once */}
@@ -2150,7 +2158,7 @@ const AdminDashboard = () => {
       <AnimatePresence>
         {isRenameModalOpen && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm px-4">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.9 }}
@@ -2160,8 +2168,8 @@ const AdminDashboard = () => {
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-bold text-on-surface-variant mb-2 uppercase tracking-widest">New Title</label>
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     value={editTitleValue}
                     onChange={(e) => {
                       setEditTitleValue(e.target.value);
@@ -2180,13 +2188,13 @@ const AdminDashboard = () => {
                   )}
                 </div>
                 <div className="flex gap-3 pt-4">
-                  <button 
+                  <button
                     onClick={() => setIsRenameModalOpen(false)}
                     className="flex-1 px-6 py-3 rounded-xl font-bold text-on-surface-variant hover:bg-surface-container-high transition-colors"
                   >
                     Cancel
                   </button>
-                  <button 
+                  <button
                     onClick={renameRecording}
                     disabled={isActionLoading}
                     className="flex-1 bg-primary text-white px-6 py-3 rounded-xl font-bold shadow-lg hover:shadow-primary/20 transition-all disabled:opacity-50"
@@ -2201,7 +2209,7 @@ const AdminDashboard = () => {
 
         {isDeleteModalOpen && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm px-4">
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.9 }}
@@ -2214,13 +2222,13 @@ const AdminDashboard = () => {
                 {itemToDelete ? "Xóa bản ghi?" : `Xóa ${selectedIds.length} bản ghi?`}
               </h3>
               <p className="text-on-surface-variant text-center mb-8 leading-relaxed">
-                {itemToDelete 
+                {itemToDelete
                   ? `Bạn có chắc chắn muốn xóa "${itemToDelete.title}"? Hành động này không thể hoàn tác.`
                   : `Bạn có chắc chắn muốn xóa ${selectedIds.length} bản ghi đã chọn? Hành động này không thể hoàn tác.`
                 }
               </p>
               <div className="flex gap-3">
-                <button 
+                <button
                   onClick={() => {
                     setIsDeleteModalOpen(false);
                     setItemToDelete(null);
@@ -2229,7 +2237,7 @@ const AdminDashboard = () => {
                 >
                   Hủy
                 </button>
-                <button 
+                <button
                   onClick={deleteMultipleRecordings}
                   disabled={isActionLoading}
                   className="flex-1 bg-error text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-error/20 hover:shadow-error/30 transition-all disabled:opacity-50"
@@ -2249,7 +2257,7 @@ const AdminDashboard = () => {
 // APP LOGIN GATE
 // Hardcoded credentials - wraps entire app
 // ──────────────────────────────────────────────
-const APP_CREDENTIALS = { username: 'nganttt', password: 'Nganxinhdep' };
+const APP_CREDENTIALS = { username: 'nganttb', password: 'Nganxinhdep' };
 const APP_AUTH_KEY = 'sonic_lens_authenticated';
 
 const AppLoginPage = ({ onLogin }: { onLogin: (remember: boolean) => void }) => {
@@ -2422,18 +2430,18 @@ export default function App() {
         <Navbar />
         <Routes>
           <Route path="/" element={<Dashboard />} />
-          <Route 
-            path="/admin" 
+          <Route
+            path="/admin"
             element={
               isAdminAuthenticated ? (
                 <AdminDashboard />
               ) : (
                 <AdminLogin onLogin={handleAdminLogin} />
               )
-            } 
+            }
           />
         </Routes>
-        
+
         <footer className="bg-surface w-full py-12 mt-auto border-t border-surface-container-low">
           <div className="flex flex-col items-center justify-center gap-4 w-full">
             <p className="font-body text-xs text-on-surface-variant">
