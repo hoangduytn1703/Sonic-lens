@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
 import { Mic, Settings, User, Play, Square, Pause, Trash2, Star, ChevronRight, LogOut, LayoutDashboard, ShieldCheck, Download, Share2, Search, MoreVertical, Upload, Edit3, FileText, Save, RotateCcw, Key, ExternalLink, Eye, EyeOff, CheckCircle2, AlertCircle, Lock } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -13,6 +13,174 @@ import { Recording, TranscriptItem } from './types';
 import { getAIConfig, saveAIConfig, isProviderAvailable, PROVIDER_PRIORITY, type AIProvider, OPENAI_API_KEYS_URL, GEMINI_API_KEYS_URL, GROQ_API_KEYS_URL, CLAUDE_API_KEYS_URL } from './lib/aiConfig';
 
 // --- Components ---
+
+// Parse "mm:ss" or "hh:mm:ss" timestamp string to seconds
+function parseTimestamp(ts: string): number {
+  if (!ts) return 0;
+  const parts = ts.trim().split(':').map(Number);
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return 0;
+}
+
+// Reusable audio player + synced transcript component
+interface SyncedTranscriptPlayerProps {
+  audioSrc: string;
+  transcript: TranscriptItem[];
+  modelIndicators?: Map<number, string>;
+}
+
+const SyncedTranscriptPlayer = ({ audioSrc, transcript, modelIndicators }: SyncedTranscriptPlayerProps) => {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [activeIdx, setActiveIdx] = useState<number>(-1);
+  const activeItemRef = useRef<HTMLDivElement>(null);
+
+  // Build a lookup: each item has a start time (from timestamp) and end time (next item's timestamp)
+  const timeMap = transcript.map((item, idx) => ({
+    idx,
+    start: parseTimestamp(item.timestamp),
+    end: idx + 1 < transcript.length ? parseTimestamp(transcript[idx + 1].timestamp) : Infinity,
+  }));
+
+  const handleTimeUpdate = useCallback(() => {
+    if (!audioRef.current || transcript.length === 0) return;
+    const t = audioRef.current.currentTime;
+    setCurrentTime(t);
+
+    // Find the segment that covers this time
+    // We want the HIGHEST index where segment.start <= t
+    let foundIdx = -1;
+    for (let i = 0; i < timeMap.length; i++) {
+      if (t >= timeMap[i].start) {
+        foundIdx = i;
+      } else {
+        // Since segments are chronological, if t < current segment.start, 
+        // we've passed the active one
+        break;
+      }
+    }
+    setActiveIdx(foundIdx);
+  }, [timeMap]);
+
+  // Auto-scroll the active item into view
+  useEffect(() => {
+    if (activeItemRef.current && audioRef.current && !audioRef.current.paused) {
+      activeItemRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [activeIdx]);
+
+  const seekTo = (ts: string) => {
+    if (!audioRef.current) return;
+    const seconds = parseTimestamp(ts);
+    audioRef.current.currentTime = seconds;
+    audioRef.current.play();
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Synced Audio Player */}
+      <div className="bg-surface-container-low p-3 rounded-xl border border-outline-variant/10">
+        <audio
+          ref={audioRef}
+          controls
+          src={audioSrc}
+          onTimeUpdate={handleTimeUpdate}
+          className="w-full h-10"
+        />
+        {transcript.length > 0 && (
+          <p className="text-[10px] text-on-surface-variant mt-1.5 text-center opacity-50">
+            Click vao doan transcript de nhay den vi tri tuong ung trong audio
+          </p>
+        )}
+      </div>
+
+      {/* Synced Transcript */}
+      {transcript.length > 0 && (
+        <div className="space-y-1.5 max-h-[600px] overflow-y-auto pr-2">
+          {transcript.map((item, idx) => {
+            const isActive = idx === activeIdx;
+            return (
+              <React.Fragment key={idx}>
+                {/* Model indicator badge */}
+                {modelIndicators?.has(idx) && (
+                  <div className="flex items-center gap-2 py-1.5">
+                    <div className="flex-1 h-px bg-outline-variant/15" />
+                    <span className={cn(
+                      "text-[9px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider flex items-center gap-1.5 border",
+                      modelIndicators.get(idx) === 'gemini' ? "bg-primary/5 text-primary border-primary/20" :
+                      modelIndicators.get(idx) === 'groq' ? "bg-[#f55036]/5 text-[#f55036] border-[#f55036]/20" :
+                      modelIndicators.get(idx) === 'openai' ? "bg-[#10a37f]/5 text-[#10a37f] border-[#10a37f]/20" :
+                      modelIndicators.get(idx) === 'claude' ? "bg-[#d97706]/5 text-[#d97706] border-[#d97706]/20" :
+                      "bg-surface-container text-on-surface-variant border-outline-variant/20"
+                    )}>
+                      <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                      {modelIndicators.get(idx)}
+                    </span>
+                    <div className="flex-1 h-px bg-outline-variant/15" />
+                  </div>
+                )}
+                <div
+                  ref={isActive ? activeItemRef : null}
+                  onClick={() => seekTo(item.timestamp)}
+                  className={cn(
+                    "flex gap-3 p-3 rounded-xl cursor-pointer transition-all duration-300 group",
+                    isActive
+                      ? "bg-primary/8 border border-primary/20 shadow-sm"
+                      : "hover:bg-surface-container-low border border-transparent"
+                  )}
+                >
+                  {/* Timestamp + play indicator */}
+                  <div className="w-14 shrink-0 pt-0.5">
+                    <span className={cn(
+                      "text-[10px] font-mono block text-center py-0.5 rounded-md transition-all",
+                      isActive
+                        ? "bg-primary text-white font-bold"
+                        : "text-on-surface-variant opacity-40 group-hover:opacity-70"
+                    )}>
+                      {item.timestamp}
+                    </span>
+                  </div>
+                  {/* Content */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={cn(
+                        "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
+                        item.gender === 'Nam' ? "bg-blue-100 text-blue-700" :
+                        item.gender === 'Nữ' ? "bg-pink-100 text-pink-700" :
+                        "bg-surface-container-highest text-on-surface-variant"
+                      )}>
+                        {item.speaker}{item.gender ? ` • ${item.gender}` : ''}
+                      </span>
+                      {isActive && (
+                        <span className="text-[9px] text-primary font-bold uppercase tracking-wider animate-pulse">
+                          dang phat
+                        </span>
+                      )}
+                    </div>
+                    <p className={cn(
+                      "text-base leading-relaxed font-body transition-all",
+                      isActive ? "text-on-surface font-medium" :
+                      item.isUncertain ? "text-error font-medium italic opacity-80" :
+                      "text-on-surface-variant"
+                    )}>
+                      {item.text}
+                      {item.isUncertain && (
+                        <span className="ml-2 inline-flex items-center gap-1 text-[9px] bg-error/10 text-error px-1.5 py-0.5 rounded border border-error/20 not-italic font-bold uppercase tracking-tighter">
+                          AI khong chac chan
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                </div>
+              </React.Fragment>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
 
 const Navbar = () => {
   const location = useLocation();
@@ -107,6 +275,7 @@ const Dashboard = () => {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [isNamingModalOpen, setIsNamingModalOpen] = useState(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [recordingSource, setRecordingSource] = useState<'live' | 'upload'>('live');
   const [namingError, setNamingError] = useState("");
   const [newRecordingTitle, setNewRecordingTitle] = useState("");
   const [hasAutoShownModal, setHasAutoShownModal] = useState(false);
@@ -118,6 +287,7 @@ const Dashboard = () => {
   const autoChunkTimerRef = useRef<any>(null);
   const isAutoChunkingRef = useRef(false);
   const lastUsedProviderRef = useRef<string | null>(null);
+  const chunkStartTimeRef = useRef<number>(0);
 
   // UI-only model indicators: maps transcript index to provider name
   // These are NOT saved to DB or exported
@@ -209,7 +379,8 @@ const Dashboard = () => {
         transcript: fullTranscript,
         summary: fullSummaryRef.current,
         duration: duration,
-        is_important: false
+        is_important: false,
+        source: recordingSource
       });
 
       if (dbError) {
@@ -302,6 +473,8 @@ const Dashboard = () => {
       setIsRecording(true);
       setIsPaused(false);
       setDuration(0);
+      setRecordingSource('live'); // It's a live recording
+      chunkStartTimeRef.current = 0;
       setCurrentTranscript("");
       setLastAudioUrl(null);
 
@@ -338,6 +511,7 @@ const Dashboard = () => {
     setMediaRecorder(prev => {
       if (prev && prev.state === 'recording') {
         console.log('[Auto-Chunk] Stopping current segment for processing...');
+        chunkStartTimeRef.current = duration; // The NEW chunk will start from current total duration
         prev.stop(); // This triggers onstop -> handleSegmentTranscription + auto-restart
       }
       return prev;
@@ -489,25 +663,38 @@ const Dashboard = () => {
   const handleSegmentTranscription = async (blob: Blob) => {
     setProcessingCount(prev => prev + 1);
     try {
+      // Use the precisely tracked start time of this chunk as the offset
+      const offsetSeconds = chunkStartTimeRef.current;
+
       const base64Audio = await blobToBase64(blob);
       const result = await transcribeAudio(base64Audio, blob.type);
 
+      // Adjust timestamps to be relative to the total recording
+      const adjustedTranscript = result.transcript.map((item: TranscriptItem) => {
+        const [mins, secs] = (item.timestamp || '00:00').split(':').map(Number);
+        const totalSecs = mins * 60 + secs + offsetSeconds;
+        const newMins = Math.floor(totalSecs / 60);
+        const newSecs = totalSecs % 60;
+        return {
+          ...item,
+          timestamp: `${String(newMins).padStart(2, '0')}:${String(newSecs).padStart(2, '0')}`
+        };
+      });
+
       // Track model changes for UI indicator
       const usedProvider = result._usedProvider as string | undefined;
-      if (usedProvider && usedProvider !== lastUsedProviderRef.current) {
-        setFullTranscript(prev => {
-          const insertIndex = prev.length;
+      setFullTranscript(prev => {
+        const insertIndex = prev.length;
+        if (usedProvider && usedProvider !== lastUsedProviderRef.current) {
           setModelIndicators(indicators => {
             const newMap = new Map(indicators);
             newMap.set(insertIndex, usedProvider);
             return newMap;
           });
-          return [...prev, ...result.transcript];
-        });
-        lastUsedProviderRef.current = usedProvider;
-      } else {
-        setFullTranscript(prev => [...prev, ...result.transcript]);
-      }
+          lastUsedProviderRef.current = usedProvider;
+        }
+        return [...prev, ...adjustedTranscript];
+      });
 
       if (result.summary) {
         fullSummaryRef.current = fullSummaryRef.current ? fullSummaryRef.current + " " + result.summary : result.summary;
@@ -538,6 +725,7 @@ const Dashboard = () => {
     setTranscriptError(null);
     allBlobsRef.current = [file];
     setFinalAudioBlob(file);
+    setRecordingSource('upload'); // It's an uploaded file
     fullSummaryRef.current = "";
     setFullTranscript([]);
     setModelIndicators(new Map());
@@ -943,9 +1131,21 @@ const Dashboard = () => {
                 </div>
               </div>
 
-              <div className="bg-surface-container-low p-4 rounded-xl border border-outline-variant/5">
-                <audio controls src={lastAudioUrl} className="w-full h-10" />
-              </div>
+              {recordingSource === 'upload' ? (
+                <SyncedTranscriptPlayer
+                  audioSrc={lastAudioUrl}
+                  transcript={fullTranscript}
+                  modelIndicators={modelIndicators}
+                />
+              ) : (
+                <div className="bg-surface-container-low p-4 rounded-xl border border-outline-variant/10">
+                   <audio
+                      src={lastAudioUrl}
+                      controls
+                      className="w-full h-10"
+                    />
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -996,8 +1196,8 @@ const Dashboard = () => {
             </div>
           </div>
           <div className="space-y-6 leading-relaxed">
-            {fullTranscript.length > 0 ? (
-              <div className="space-y-6">
+            {recordingSource === 'live' && fullTranscript.length > 0 && !transcriptError ? (
+               <div className="space-y-6">
                 {fullTranscript.map((item, idx) => (
                   <React.Fragment key={idx}>
                     {/* Model indicator badge - UI only */}
@@ -1007,10 +1207,10 @@ const Dashboard = () => {
                         <span className={cn(
                           "text-[9px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider flex items-center gap-1.5 border",
                           modelIndicators.get(idx) === 'gemini' ? "bg-primary/5 text-primary border-primary/20" :
-                            modelIndicators.get(idx) === 'groq' ? "bg-[#f55036]/5 text-[#f55036] border-[#f55036]/20" :
-                              modelIndicators.get(idx) === 'openai' ? "bg-[#10a37f]/5 text-[#10a37f] border-[#10a37f]/20" :
-                                modelIndicators.get(idx) === 'claude' ? "bg-[#d97706]/5 text-[#d97706] border-[#d97706]/20" :
-                                  "bg-surface-container text-on-surface-variant border-outline-variant/20"
+                          modelIndicators.get(idx) === 'groq' ? "bg-[#f55036]/5 text-[#f55036] border-[#f55036]/20" :
+                          modelIndicators.get(idx) === 'openai' ? "bg-[#10a37f]/5 text-[#10a37f] border-[#10a37f]/20" :
+                          modelIndicators.get(idx) === 'claude' ? "bg-[#d97706]/5 text-[#d97706] border-[#d97706]/20" :
+                          "bg-surface-container text-on-surface-variant border-outline-variant/20"
                         )}>
                           <span className="w-1.5 h-1.5 rounded-full bg-current"></span>
                           {modelIndicators.get(idx)}
@@ -1031,7 +1231,7 @@ const Dashboard = () => {
                       </div>
                       <p className={cn(
                         "text-lg font-body transition-colors",
-                        item.isUncertain ? "text-error font-medium italic" : "text-on-surface"
+                        item.isUncertain ? "text-error font-medium italic opacity-80" : "text-on-surface text-on-surface-variant"
                       )}>
                         {item.text}
                         {item.isUncertain && (
@@ -1568,22 +1768,29 @@ const AdminDashboard = () => {
                                   }}
                                   className="mt-1 w-4 h-4 rounded border-surface-container-high text-primary focus:ring-primary"
                                 />
-                                <div className="flex-1" onClick={() => setSelectedRecording(rec)}>
-                                  <div className="flex justify-between items-start mb-1">
-                                    <span className="text-xs font-bold text-primary uppercase tracking-wider">
-                                      {rec.is_important && <Star className="w-3 h-3 fill-current inline mr-1" />}
-                                      {format(new Date(rec.created_at), 'HH:mm')}
-                                    </span>
-                                    <span className="text-xs text-on-surface-variant">{format(new Date(rec.created_at), 'dd/MM/yyyy')}</span>
-                                  </div>
-                                  <h4 className="font-headline font-bold text-on-surface truncate">{rec.title}</h4>
-                                  <div className="flex items-center gap-3 mt-2">
-                                    <span className="flex items-center gap-1 text-xs text-on-surface-variant">
-                                      <Play className="w-3 h-3" /> {formatDuration(rec.duration)}
-                                    </span>
+                                  <div className="flex-1" onClick={() => setSelectedRecording(rec)}>
+                                    <div className="flex justify-between items-start mb-1">
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-xs font-bold text-primary uppercase tracking-wider">
+                                          {rec.is_important && <Star className="w-3 h-3 fill-current inline mr-1" />}
+                                          {format(new Date(rec.created_at), 'HH:mm')}
+                                        </span>
+                                        {rec.source === 'upload' ? (
+                                          <span className="text-[8px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 font-black uppercase tracking-tighter border border-green-200">SYNC</span>
+                                        ) : (
+                                          <span className="text-[8px] px-1.5 py-0.5 rounded bg-surface-container-highest text-on-surface-variant font-bold uppercase tracking-tighter border border-outline-variant/10">LIVE</span>
+                                        )}
+                                      </div>
+                                      <span className="text-xs text-on-surface-variant font-medium">{format(new Date(rec.created_at), 'dd/MM/yyyy')}</span>
+                                    </div>
+                                    <h4 className="font-headline font-bold text-on-surface truncate">{rec.title}</h4>
+                                    <div className="flex items-center gap-3 mt-2">
+                                      <span className="flex items-center gap-1 text-xs text-on-surface-variant">
+                                        <Play className="w-3 h-3" /> {formatDuration(rec.duration)}
+                                      </span>
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
                             ))
                           )}
                         </div>
@@ -1644,60 +1851,49 @@ const AdminDashboard = () => {
                           </div>
                         </div>
 
-                        <audio controls src={selectedRecording.audio_url} className="w-full mb-4" />
+                        {selectedRecording.source === 'upload' ? (
+                          <SyncedTranscriptPlayer
+                            audioSrc={selectedRecording.audio_url}
+                            transcript={selectedRecording.transcript}
+                          />
+                        ) : (
+                          <>
+                             <audio controls src={selectedRecording.audio_url} className="w-full mb-6" />
+                             <div className="space-y-6">
+                              {selectedRecording.transcript.map((item, idx) => (
+                                <div key={idx} className="flex gap-4">
+                                   <div className="shrink-0">
+                                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-surface-container-highest text-on-surface-variant opacity-50">{item.timestamp}</span>
+                                   </div>
+                                   <div className="flex-1">
+                                      <div className="flex items-center gap-2 mb-1">
+                                         <span className={cn(
+                                            "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
+                                            item.gender === 'Nam' ? "bg-blue-100 text-blue-700" :
+                                              item.gender === 'Nữ' ? "bg-pink-100 text-pink-700" : "bg-surface-container-highest text-on-surface-variant"
+                                          )}>
+                                            {item.speaker} {item.gender ? `• ${item.gender}` : ""}
+                                          </span>
+                                      </div>
+                                      <p className={cn(
+                                        "text-base leading-relaxed font-body",
+                                        item.isUncertain ? "text-error font-medium italic opacity-80" : "text-on-surface"
+                                      )}>
+                                        {item.text}
+                                      </p>
+                                   </div>
+                                </div>
+                              ))}
+                             </div>
+                          </>
+                        )}
 
                         {selectedRecording.summary && (
-                          <div className="bg-primary-fixed/20 p-4 rounded-lg border border-primary-fixed">
+                          <div className="bg-primary-fixed/20 p-4 rounded-lg border border-primary-fixed mt-6">
                             <h4 className="font-headline font-bold text-sm text-primary mb-1 uppercase tracking-wider">Tóm tắt AI</h4>
                             <p className="text-on-surface text-sm leading-relaxed">{selectedRecording.summary}</p>
                           </div>
                         )}
-                      </div>
-
-                      <div className="bg-surface-container-lowest rounded-xl p-8 shadow-sm border border-outline-variant/10 min-h-[400px]">
-                        <div className="flex items-center gap-6 mb-8 border-b border-outline-variant/10 pb-4">
-                          <span className="px-3 py-1 bg-secondary-fixed text-on-secondary-fixed text-xs font-bold rounded-md uppercase">Transcript</span>
-                          <div className="flex items-center gap-4 text-[10px] font-bold uppercase tracking-widest text-on-surface-variant">
-                            <div className="flex items-center gap-1.5">
-                              <div className="w-2 h-2 rounded-full bg-blue-400"></div> Nam
-                            </div>
-                            <div className="flex items-center gap-1.5">
-                              <div className="w-2 h-2 rounded-full bg-pink-400"></div> Nữ
-                            </div>
-                            <div className="flex items-center gap-1.5 text-error">
-                              <div className="w-2 h-2 rounded-full bg-error"></div> Không rõ
-                            </div>
-                          </div>
-                        </div>
-                        <div className="space-y-8">
-                          {selectedRecording.transcript.map((item, idx) => (
-                            <div key={idx} className="flex gap-6 group">
-                              <div className="w-24 shrink-0 text-xs font-mono text-on-surface-variant uppercase tracking-tighter pt-1 opacity-50">{item.timestamp}</div>
-                              <div className="flex-1">
-                                <div className="flex items-center gap-2 mb-1.5">
-                                  <span className={cn(
-                                    "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
-                                    item.gender === 'Nam' ? "bg-blue-100 text-blue-700" :
-                                      item.gender === 'Nữ' ? "bg-pink-100 text-pink-700" : "bg-surface-container-highest text-on-surface-variant"
-                                  )}>
-                                    {item.speaker} {item.gender ? `• ${item.gender}` : ""}
-                                  </span>
-                                </div>
-                                <p className={cn(
-                                  "text-lg leading-relaxed font-body transition-colors",
-                                  item.isUncertain ? "text-error font-medium italic" : "text-on-surface"
-                                )}>
-                                  {item.text}
-                                  {item.isUncertain && (
-                                    <span className="ml-2 inline-flex items-center gap-1 text-[9px] bg-error/10 text-error px-1.5 py-0.5 rounded border border-error/20 not-italic font-bold uppercase tracking-tighter">
-                                      AI không chắc chắn
-                                    </span>
-                                  )}
-                                </p>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
                       </div>
                     </>
                   ) : (
