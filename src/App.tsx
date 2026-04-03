@@ -250,7 +250,7 @@ function parseFriendlyError(raw: string): string {
     return 'API Key khong hop le hoac da het han. Vui long kiem tra lai key trong Admin > API Settings.';
   }
   if (lower.includes('network') || lower.includes('fetch') || lower.includes('failed to fetch') || lower.includes('cors') || lower.includes('load failed')) {
-    return 'Khong goi duoc API (mang hoac trinh duyet chan CORS). Voi NVIDIA NIM: chay bang npm run dev (co proxy), hoac dat VITE_NVIDIA_NIM_CHAT_URL toi duong proxy cung origin. Kiem tra API key tren build.nvidia.com.';
+    return 'Khong goi duoc API (mang hoac trinh duyet chan CORS). Voi NVIDIA NIM: can proxy /nvidia-nim-api tren server (giong npm run dev), hoac chay npm run serve:prod sau build, hoac dat VITE_NVIDIA_NIM_CHAT_URL. Kiem tra API key tren build.nvidia.com.';
   }
   if (lower.includes('timeout') || lower.includes('timed out')) {
     return 'Yeu cau qua thoi gian cho. Thu ghi am ngan hon hoac chon model nhanh hon (Groq).';
@@ -2404,7 +2404,7 @@ const AdminDashboard = () => {
                             <div className="flex-1">
                               <p className="text-sm font-bold text-on-surface">NVIDIA NIM</p>
                               <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
-                                NIM <strong>không</strong> gọi API Google Gemini; đây là endpoint NVIDIA (chat kiểu OpenAI). Muốn model cùng “họ Google” trên catalog thì dùng <strong>Gemma</strong> (ví dụ <code className="rounded bg-surface-container px-1">google/gemma-2-27b-it</code>), không dùng được chuỗi <code className="rounded bg-surface-container px-1">gemini-2.5-flash</code> như bên AI Studio. STT vẫn là Whisper (Groq/OpenAI). CORS: dùng <code className="rounded bg-surface-container px-1">npm run dev</code> hoặc <code className="rounded bg-surface-container px-1">VITE_NVIDIA_NIM_CHAT_URL</code>.
+                                NIM <strong>không</strong> gọi API Google Gemini; đây là endpoint NVIDIA (chat kiểu OpenAI). Muốn model cùng “họ Google” trên catalog thì dùng <strong>Gemma</strong> (ví dụ <code className="rounded bg-surface-container px-1">google/gemma-2-27b-it</code>), không dùng được chuỗi <code className="rounded bg-surface-container px-1">gemini-2.5-flash</code> như bên AI Studio. STT vẫn là Whisper (Groq/OpenAI). <strong>Deploy:</strong> app gọi <code className="rounded bg-surface-container px-1">/nvidia-nim-api</code> (cùng domain) — cần proxy tới NVIDIA như <code className="rounded bg-surface-container px-1">npm run dev</code>, hoặc <code className="rounded bg-surface-container px-1">npm run serve:prod</code>, hoặc cấu hình nginx / <code className="rounded bg-surface-container px-1">VITE_NVIDIA_NIM_CHAT_URL</code>.
                               </p>
                               <a
                                 href={NVIDIA_NIM_EXPLORE_URL}
