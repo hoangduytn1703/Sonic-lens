@@ -1,4 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
+import { GEMINI_NATIVE_AUDIO_MODEL } from '../lib/geminiTextModel';
+import { AI_SUMMARY_FIELD_RULES_EN } from '../lib/aiSummaryPrompt';
 
 // Khởi tạo AI với API Key từ môi trường
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
@@ -18,7 +20,8 @@ export const transcribeAudio = async (base64Audio: string, mimeType: string) => 
     2. Đoán giới tính của người nói (Nam/Nữ/Không rõ).
     3. Ghi lại chính xác nội dung hội thoại.
     4. Đánh dấu "isUncertain": true cho những đoạn hội thoại nào mà âm thanh không rõ, bạn phải đoán hoặc không chắc chắn 100% về nội dung.
-    5. Tóm tắt ngắn gọn các ý chính của cuộc họp.
+
+    ${AI_SUMMARY_FIELD_RULES_EN}
 
     Định dạng kết quả trả về BẮT BUỘC là JSON với cấu trúc:
     {
@@ -32,13 +35,13 @@ export const transcribeAudio = async (base64Audio: string, mimeType: string) => 
         },
         ...
       ],
-      "summary": "Tóm tắt ngắn gọn nội dung cuộc họp."
+      "summary": "<chuỗi tiếng Việt: tuân thủ SUMMARY FIELD rules; dùng tiêu đề ## và bullet - trên các dòng trong chuỗi>"
     }
   `;
 
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: GEMINI_NATIVE_AUDIO_MODEL,
       contents: [
         {
           parts: [

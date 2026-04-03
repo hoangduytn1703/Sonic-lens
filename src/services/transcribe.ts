@@ -5,18 +5,24 @@
 
 import { transcribeAudio as transcribeWithGemini } from './gemini';
 import { GoogleGenAI } from "@google/genai";
-import { getAIConfig, isProviderAvailable, PROVIDER_PRIORITY, type AIProvider } from '../lib/aiConfig';
+import { getAIConfig, getProviderPriority, isProviderAvailable, type AIProvider } from '../lib/aiConfig';
+import { AI_SUMMARY_FIELD_RULES_EN } from '../lib/aiSummaryPrompt';
+import { getGeminiTextModel } from '../lib/geminiTextModel';
+import { getNvidiaNimChatCompletionsUrl } from '../lib/nvidiaNimEndpoint';
 
 // Shared prompt for structuring transcript (used by OpenAI, Groq, Claude)
 const STRUCTURING_SYSTEM_PROMPT = `You are a professional meeting transcript specialist.
 Given raw transcript text (primarily Vietnamese), structure it into speaker-diarized JSON.
 Identify different speakers, guess gender (Nam/Nu/Khong ro), assign timestamps from 00:00.
-Return ONLY valid JSON:
+
+${AI_SUMMARY_FIELD_RULES_EN}
+
+Return ONLY valid JSON (no markdown fences):
 {
   "transcript": [
     { "speaker": "Speaker 1", "gender": "Nam/Nu/Khong ro", "text": "...", "timestamp": "mm:ss", "isUncertain": false }
   ],
-  "summary": "Brief summary in Vietnamese."
+  "summary": "<Vietnamese string: follow SUMMARY FIELD rules exactly; use ## section headers and - bullet lines inside the string with newline characters>"
 }`;
 
 // Helper: convert base64 audio to Blob + determine extension
@@ -136,7 +142,7 @@ async function whisperSTT(base64Audio: string, mimeType: string): Promise<{ text
 
 // ──────────────────────────────────────────────
 // GEMINI TEXT-ONLY STRUCTURING (no audio, saves ~80% tokens)
-// Uses gemini-2.5-flash for text structuring only (20 RPD free tier)
+// Uses getGeminiTextModel() for text structuring (see lib/geminiTextModel.ts)
 // ──────────────────────────────────────────────
 async function structureWithGemini(rawText: string): Promise<any> {
   if (!process.env.GEMINI_API_KEY) {
@@ -154,21 +160,35 @@ YEU CAU:
 3. Ghi nhan chinh xac noi dung hoi thoai.
 4. GIU NGUYEN CHINH XAC TIMESTAMP [mm:ss] tu input vao field "timestamp". Khong duoc tu y thay doi thoi gian.
 5. Danh dau "isUncertain": true cho nhung doan khong ro rang.
-6. Tom tat ngan gon cac y chinh.
+6. Truong "summary": tom tat DIEU HANH, KHONG viet lai toan bo hoi thoai. Toi da khoang 12 dong bullet (khong tinh tieu de ##). Bat buoc dung khung sau (tieng Viet, xuong dong trong chuoi JSON bang ky tu xuong dong that):
+
+## Tổng quan
+<mot cau toi da 25 tu>
+
+## Điểm chính
+- <3 den 7 bullet, moi bullet toi da khoang 15 tu>
+
+## Quyết định / Việc cần làm
+- <hoac mot dong: Khong co.>
+
+## Từ khóa
+<toi da 8 tu, cach nhau boi dau phay>
+
+Khong doan van dai. Khong trich dan hoi thoai dai.
 
 Dinh dang ket qua tra ve BAT BUOC la JSON:
 {
   "transcript": [
     { "speaker": "Tên người nói", "gender": "Nam/Nữ/Không rõ", "text": "...", "timestamp": "mm:ss", "isUncertain": false }
   ],
-  "summary": "Tóm tắt ngắn gọn nội dung."
+  "summary": "<chuoi theo khung tren>"
 }
 
 NOI DUNG CAN PHAN TICH:
 ${rawText}`;
 
   const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+    model: getGeminiTextModel(),
     contents: [{ parts: [{ text: prompt }] }],
     config: { responseMimeType: "application/json" }
   });
@@ -176,6 +196,57 @@ ${rawText}`;
   const text = response.text;
   console.log('[Hybrid] Gemini text structuring completed (no audio sent, ~80% token savings)');
   return JSON.parse(text);
+}
+
+async function structureWithNvidiaNim(rawText: string): Promise<any> {
+  const config = getAIConfig();
+  const apiKey = config.nvidiaNimApiKey?.trim();
+  if (!apiKey) throw new Error('Missing NVIDIA NIM API key.');
+  const model = config.nvidiaNimModel?.trim() || 'google/gemma-2-27b-it';
+  const url = getNvidiaNimChatCompletionsUrl();
+
+  const messages: { role: string; content: string }[] = [
+    { role: 'system', content: STRUCTURING_SYSTEM_PROMPT },
+    { role: 'user', content: `Structure this transcript:\n\n${rawText}` },
+  ];
+
+  const baseHeaders = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' as const };
+
+  let llmRes = await fetch(url, {
+    method: 'POST',
+    headers: baseHeaders,
+    body: JSON.stringify({
+      model,
+      response_format: { type: 'json_object' },
+      messages,
+    }),
+  });
+
+  // Some NIM builds reject json_object mode; retry without it and parse JSON from text.
+  if (!llmRes.ok && (llmRes.status === 400 || llmRes.status === 422)) {
+    console.warn('[Hybrid] NVIDIA NIM: retrying without response_format json_object');
+    llmRes = await fetch(url, {
+      method: 'POST',
+      headers: baseHeaders,
+      body: JSON.stringify({ model, messages }),
+    });
+  }
+
+  if (!llmRes.ok) {
+    const err = await llmRes.json().catch(() => ({}));
+    throw new Error(err?.error?.message || llmRes.statusText || 'NVIDIA NIM error');
+  }
+
+  const data = await llmRes.json();
+  const content = data.choices?.[0]?.message?.content || '{}';
+  console.log('[Hybrid] NVIDIA NIM text structuring completed');
+  try {
+    return JSON.parse(content);
+  } catch {
+    const m = content.match(/\{[\s\S]*\}/);
+    if (m) return JSON.parse(m[0]);
+    throw new Error('NVIDIA NIM returned non-JSON text; try another model or enable json_object support.');
+  }
 }
 
 // ──────────────────────────────────────────────
@@ -193,7 +264,7 @@ async function transcribeHybrid(base64Audio: string, mimeType: string): Promise<
     };
   }
 
-  // Step 2: Structure text with LLMs (try in order: Gemini text > Groq Llama > OpenAI GPT > Claude)
+  // Step 2: Structure text with LLMs (Gemini text > NVIDIA NIM > Groq > OpenAI)
   const config = getAIConfig();
   let result: any;
   let structureProvider = '';
@@ -207,6 +278,19 @@ async function transcribeHybrid(base64Audio: string, mimeType: string): Promise<
       console.warn('[Hybrid] Gemini text structuring failed:', err.message);
       if (shouldDisableProvider(err.message)) {
         disabledProviders.add('gemini');
+      }
+    }
+  }
+
+  // NVIDIA NIM
+  if (!result && config.nvidiaNimApiKey && !disabledProviders.has('nvidiaNim')) {
+    try {
+      result = await structureWithNvidiaNim(rawText);
+      structureProvider = 'nvidia-nim';
+    } catch (err: any) {
+      console.warn('[Hybrid] NVIDIA NIM structuring failed:', err.message);
+      if (shouldDisableProvider(err.message)) {
+        disabledProviders.add('nvidiaNim');
       }
     }
   }
@@ -370,6 +454,57 @@ async function transcribeWithGroq(base64Audio: string, mimeType: string, apiKey:
 }
 
 // ──────────────────────────────────────────────
+// NVIDIA NIM: Whisper STT -> NIM chat completions (standalone)
+// ──────────────────────────────────────────────
+async function transcribeWithNvidiaNim(base64Audio: string, mimeType: string) {
+  const config = getAIConfig();
+  if (!config.nvidiaNimApiKey?.trim()) throw new Error('Missing NVIDIA NIM API Key.');
+
+  const { blob: audioBlob, ext } = audioBase64ToBlob(base64Audio, mimeType);
+  let rawText = '';
+
+  if (config.groqApiKey && !disabledProviders.has('groq')) {
+    const formData = new FormData();
+    formData.append('file', audioBlob, `audio.${ext}`);
+    formData.append('model', 'whisper-large-v3');
+    formData.append('response_format', 'verbose_json');
+    formData.append('language', 'vi');
+    const whisperRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.groqApiKey}` },
+      body: formData,
+    });
+    if (!whisperRes.ok) {
+      const err = await whisperRes.json().catch(() => ({}));
+      throw new Error(`Groq Whisper error: ${err?.error?.message || whisperRes.statusText}`);
+    }
+    const whisperData = await whisperRes.json();
+    rawText = whisperData.text || '';
+  } else if (config.openaiApiKey && !disabledProviders.has('openai')) {
+    const formData = new FormData();
+    formData.append('file', audioBlob, `audio.${ext}`);
+    formData.append('model', 'whisper-1');
+    formData.append('response_format', 'verbose_json');
+    formData.append('language', 'vi');
+    const whisperRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${config.openaiApiKey}` },
+      body: formData,
+    });
+    if (!whisperRes.ok) {
+      const err = await whisperRes.json().catch(() => ({}));
+      throw new Error(`OpenAI Whisper error: ${err?.error?.message || whisperRes.statusText}`);
+    }
+    const whisperData = await whisperRes.json();
+    rawText = whisperData.text || '';
+  } else {
+    throw new Error('NVIDIA NIM needs a Groq or OpenAI API Key for Whisper speech-to-text.');
+  }
+
+  return structureWithNvidiaNim(rawText);
+}
+
+// ──────────────────────────────────────────────
 // CLAUDE: Whisper STT -> Claude structuring (standalone)
 // ──────────────────────────────────────────────
 async function transcribeWithClaude(base64Audio: string, mimeType: string, claudeApiKey: string) {
@@ -467,6 +602,9 @@ async function runProvider(provider: AIProvider, base64Audio: string, mimeType: 
       if (!config.groqApiKey) throw new Error('Missing Groq API Key.');
       return transcribeWithGroq(base64Audio, mimeType, config.groqApiKey);
 
+    case 'nvidiaNim':
+      return transcribeWithNvidiaNim(base64Audio, mimeType);
+
     case 'claude':
       if (!config.claudeApiKey) throw new Error('Missing Claude API Key.');
       return transcribeWithClaude(base64Audio, mimeType, config.claudeApiKey);
@@ -544,7 +682,8 @@ export const transcribeAudio = async (base64Audio: string, mimeType: string) => 
     console.warn('[Sonic Lens] Hybrid pipeline failed, falling back to other standalone providers...');
 
     // Step 3: Final fallback to other standalone providers in priority order
-    const availableProviders = PROVIDER_PRIORITY.filter(p =>
+    const chain = getProviderPriority(config);
+    const availableProviders = chain.filter(p =>
       p !== 'gemini' && isProviderAvailable(p, config) && !disabledProviders.has(p)
     );
 
@@ -552,7 +691,7 @@ export const transcribeAudio = async (base64Audio: string, mimeType: string) => 
       if (disabledProviders.size > 0) {
         console.log('[Sonic Lens] All providers failed/blacklisted. Resetting and retrying 1 last time...');
         disabledProviders.clear();
-        const retryProviders = PROVIDER_PRIORITY.filter(p => isProviderAvailable(p, config));
+        const retryProviders = chain.filter(p => isProviderAvailable(p, config));
         if (retryProviders.length > 0) {
           return transcribeWithStandaloneFallback(retryProviders, base64Audio, mimeType);
         }
