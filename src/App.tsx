@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
-import { Mic, Settings, User, Play, Square, Pause, Trash2, Star, ChevronRight, LogOut, LayoutDashboard, ShieldCheck, Download, Share2, Search, MoreVertical, Upload, Edit3, FileText, Save, RotateCcw, Key, ExternalLink, Eye, EyeOff, CheckCircle2, AlertCircle, Lock } from 'lucide-react';
+import { Mic, Settings, User, Play, Square, Pause, Trash2, Star, ChevronRight, LogOut, LayoutDashboard, ShieldCheck, Download, Share2, Search, MoreVertical, Upload, Edit3, FileText, Save, RotateCcw, Key, ExternalLink, Eye, EyeOff, CheckCircle2, AlertCircle, Lock, Info, Loader2, GripVertical } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
 import { Document, Packer, Paragraph, TextRun } from 'docx';
@@ -10,7 +10,18 @@ import { isSupabaseConfigured, supabase } from './lib/supabase';
 import { transcribeAudio } from './services/transcribe';
 import { resetProviderBlacklist } from './services/transcribe';
 import { Recording, TranscriptItem } from './types';
-import { getAIConfig, saveAIConfig, isProviderAvailable, PROVIDER_PRIORITY, type AIProvider, OPENAI_API_KEYS_URL, GEMINI_API_KEYS_URL, GROQ_API_KEYS_URL, CLAUDE_API_KEYS_URL } from './lib/aiConfig';
+import { getAIConfig, saveAIConfig, isProviderEnabled, providerHasCredentials, getProviderPriority, type AIProvider, OPENAI_API_KEYS_URL, GEMINI_API_KEYS_URL, GROQ_API_KEYS_URL, CLAUDE_API_KEYS_URL, NVIDIA_NIM_EXPLORE_URL } from './lib/aiConfig';
+import { GoTopButton } from './components/GoTopButton';
+import { AiSummaryBlock } from './components/AiSummaryBlock';
+import { generateFinalSummary } from './lib/generateSummary';
+
+const PROVIDER_ORDER_LABELS: Record<AIProvider, string> = {
+  gemini: 'Gemini',
+  nvidiaNim: 'NVIDIA NIM',
+  groq: 'Groq',
+  openai: 'OpenAI',
+  claude: 'Claude',
+};
 
 // --- Components ---
 
@@ -86,7 +97,7 @@ const SyncedTranscriptPlayer = ({ audioSrc, transcript, modelIndicators }: Synce
           controls
           src={audioSrc}
           onTimeUpdate={handleTimeUpdate}
-          className="w-full h-10"
+          className="w-full h-10 cursor-pointer"
         />
         {transcript.length > 0 && (
           <p className="text-[10px] text-on-surface-variant mt-1.5 text-center opacity-50">
@@ -190,12 +201,12 @@ const Navbar = () => {
     <header className="bg-surface fixed top-0 left-0 right-0 z-50 border-b border-surface-container-low">
       <div className="flex justify-between items-center px-8 py-4 w-full max-w-full mx-auto">
         <div className="flex items-center gap-8">
-          <Link to="/" className="text-2xl font-black tracking-tighter text-primary font-headline">Sonic Lens</Link>
+          <Link to="/" className="cursor-pointer text-2xl font-black tracking-tighter text-primary font-headline">Sonic Lens</Link>
           <nav className="hidden md:flex gap-6 items-center">
             <Link
               to="/"
               className={cn(
-                "font-headline tracking-tight transition-colors duration-200",
+                "cursor-pointer font-headline tracking-tight transition-colors duration-200",
                 !isAdmin ? "text-primary font-bold border-b-2 border-primary" : "text-on-surface-variant font-medium hover:text-primary"
               )}
             >
@@ -204,7 +215,7 @@ const Navbar = () => {
             <Link
               to="/admin"
               className={cn(
-                "font-headline tracking-tight transition-colors duration-200",
+                "cursor-pointer font-headline tracking-tight transition-colors duration-200",
                 isAdmin ? "text-primary font-bold border-b-2 border-primary" : "text-on-surface-variant font-medium hover:text-primary"
               )}
             >
@@ -238,8 +249,8 @@ function parseFriendlyError(raw: string): string {
   if (lower.includes('unauthorized') || lower.includes('401') || lower.includes('invalid') && lower.includes('key')) {
     return 'API Key khong hop le hoac da het han. Vui long kiem tra lai key trong Admin > API Settings.';
   }
-  if (lower.includes('network') || lower.includes('fetch') || lower.includes('failed to fetch') || lower.includes('cors')) {
-    return 'Loi ket noi mang. Vui long kiem tra internet va thu lai.';
+  if (lower.includes('network') || lower.includes('fetch') || lower.includes('failed to fetch') || lower.includes('cors') || lower.includes('load failed')) {
+    return 'Khong goi duoc API (mang hoac trinh duyet chan CORS). Voi NVIDIA NIM: chay bang npm run dev (co proxy), hoac dat VITE_NVIDIA_NIM_CHAT_URL toi duong proxy cung origin. Kiem tra API key tren build.nvidia.com.';
   }
   if (lower.includes('timeout') || lower.includes('timed out')) {
     return 'Yeu cau qua thoi gian cho. Thu ghi am ngan hon hoac chon model nhanh hon (Groq).';
@@ -271,17 +282,26 @@ const Dashboard = () => {
   const [fullTranscript, setFullTranscript] = useState<TranscriptItem[]>([]);
   const [lastAudioUrl, setLastAudioUrl] = useState<string | null>(null);
   const [finalAudioBlob, setFinalAudioBlob] = useState<Blob | null>(null);
-  const [shouldSave, setShouldSave] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [isNamingModalOpen, setIsNamingModalOpen] = useState(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
   const [recordingSource, setRecordingSource] = useState<'live' | 'upload'>('live');
   const [namingError, setNamingError] = useState("");
   const [newRecordingTitle, setNewRecordingTitle] = useState("");
-  const [hasAutoShownModal, setHasAutoShownModal] = useState(false);
+  const [renderToast, setRenderToast] = useState<{ variant: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const renderCompletionToastShownRef = useRef(false);
+  const transcriptPanelRef = useRef<HTMLElement | null>(null);
+  const recordingResultCardRef = useRef<HTMLDivElement | null>(null);
+  const recordingSourceRef = useRef(recordingSource);
+  const fullTranscriptRef = useRef<TranscriptItem[]>(fullTranscript);
+  const fullTranscriptLengthRef = useRef(fullTranscript.length);
+  recordingSourceRef.current = recordingSource;
+  fullTranscriptRef.current = fullTranscript;
+  fullTranscriptLengthRef.current = fullTranscript.length;
   const allBlobsRef = useRef<Blob[]>([]);
   const isWaitingForFinalBlobRef = useRef(false);
-  const fullSummaryRef = useRef<string>("");
+  const [sessionSummary, setSessionSummary] = useState('');
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const autoChunkTimerRef = useRef<any>(null);
@@ -298,14 +318,38 @@ const Dashboard = () => {
   // Max chunk duration in seconds for file splitting
   const MAX_CHUNK_SECONDS = 2 * 60;
 
-  // Effect to handle state when processing is done
   useEffect(() => {
-    if (shouldSave && !isRecording && processingCount === 0 && !isNamingModalOpen && !hasAutoShownModal && lastAudioUrl) {
-      setNewRecordingTitle(`Meeting ${format(new Date(), 'yyyy-MM-dd HH:mm')}`);
-      setIsNamingModalOpen(true);
-      setHasAutoShownModal(true);
+    if (!renderToast) return;
+    const t = window.setTimeout(() => setRenderToast(null), 5000);
+    return () => window.clearTimeout(t);
+  }, [renderToast]);
+
+  // Toast when AI finished (success or error); user saves manually via "Luu ban ghi"
+  useEffect(() => {
+    if (isRecording || isFinalizing || isProcessing || !lastAudioUrl) return;
+    if (renderCompletionToastShownRef.current) return;
+    renderCompletionToastShownRef.current = true;
+    if (transcriptError) {
+      setRenderToast({ variant: 'error', message: transcriptError });
+    } else {
+      setRenderToast({
+        variant: 'success',
+        message:
+          'Đã xử lý xong, vui lòng review trước khi thao tác (lưu, xuất file, hủy bỏ)',
+      });
     }
-  }, [shouldSave, isRecording, processingCount, isNamingModalOpen, hasAutoShownModal, lastAudioUrl]);
+
+    const scrollToResults = () => {
+      const uploadWithTranscript =
+        recordingSourceRef.current === 'upload' &&
+        fullTranscriptLengthRef.current > 0;
+      const el = uploadWithTranscript
+        ? recordingResultCardRef.current
+        : transcriptPanelRef.current;
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+    window.setTimeout(scrollToResults, 200);
+  }, [isRecording, isFinalizing, isProcessing, lastAudioUrl, transcriptError]);
 
   const resetRecording = () => {
     setCurrentTranscript("");
@@ -316,9 +360,11 @@ const Dashboard = () => {
     setSaveStatus('idle');
     setNewRecordingTitle("");
     setNamingError("");
-    setHasAutoShownModal(false);
+    setRenderToast(null);
+    renderCompletionToastShownRef.current = false;
     allBlobsRef.current = [];
-    fullSummaryRef.current = "";
+    setSessionSummary('');
+    setIsGeneratingSummary(false);
     setIsResetModalOpen(false);
   };
 
@@ -377,7 +423,7 @@ const Dashboard = () => {
         title: titleToSave,
         audio_url: publicUrl,
         transcript: fullTranscript,
-        summary: fullSummaryRef.current,
+        summary: sessionSummary,
         duration: duration,
         is_important: false,
         source: recordingSource
@@ -392,7 +438,11 @@ const Dashboard = () => {
       setSaveStatus('success');
       setNamingError("");
       setIsNamingModalOpen(false);
-      setShouldSave(false);
+      setRenderToast({
+        variant: 'info',
+        message:
+          'Đã lưu thành công. Bạn có thể vào Admin > Bản ghi âm để xem lại transcript và tóm tắt AI.',
+      });
       // Reset status after a while
       setTimeout(() => setSaveStatus('idle'), 5000);
     } catch (storageErr: any) {
@@ -457,14 +507,15 @@ const Dashboard = () => {
       setFinalAudioBlob(null);
       isWaitingForFinalBlobRef.current = false;
       isAutoChunkingRef.current = false;
-      fullSummaryRef.current = "";
+      setSessionSummary('');
+      setIsGeneratingSummary(false);
       setFullTranscript([]);
       setModelIndicators(new Map());
       lastUsedProviderRef.current = null;
       setProcessingCount(0);
       setTranscriptError(null);
       setSaveStatus('idle');
-      setHasAutoShownModal(false);
+      renderCompletionToastShownRef.current = false;
 
       setupRecorder(recorder);
 
@@ -557,8 +608,21 @@ const Dashboard = () => {
           setFinalAudioBlob(wavBlob);
           const url = URL.createObjectURL(wavBlob);
           setLastAudioUrl(url);
-          setShouldSave(true);
+          setNewRecordingTitle(`Meeting ${format(new Date(), 'yyyy-MM-dd HH:mm')}`);
           console.log(`Ghi âm hoàn tất. Đã hợp nhất ${audioBuffers.length} đoạn thành file WAV.`);
+
+          // Generate summary from complete transcript (use ref to get latest value)
+          console.log('[finalizeRecording] Generating final summary...');
+          setIsGeneratingSummary(true);
+          try {
+            const summary = await generateFinalSummary(fullTranscriptRef.current);
+            setSessionSummary(summary);
+            if (summary) {
+              console.log('[finalizeRecording] Summary generated successfully');
+            }
+          } finally {
+            setIsGeneratingSummary(false);
+          }
         }
       } catch (err) {
         console.error("Error finalizing recording:", err);
@@ -668,6 +732,7 @@ const Dashboard = () => {
 
       const base64Audio = await blobToBase64(blob);
       const result = await transcribeAudio(base64Audio, blob.type);
+      setTranscriptError(null);
 
       // Adjust timestamps to be relative to the total recording
       const adjustedTranscript = result.transcript.map((item: TranscriptItem) => {
@@ -696,9 +761,7 @@ const Dashboard = () => {
         return [...prev, ...adjustedTranscript];
       });
 
-      if (result.summary) {
-        fullSummaryRef.current = fullSummaryRef.current ? fullSummaryRef.current + " " + result.summary : result.summary;
-      }
+      // Do not accumulate summary per chunk - we'll generate once at the end
     } catch (err: any) {
       console.error("Transcription error:", err);
       setTranscriptError(parseFriendlyError(err.message));
@@ -723,10 +786,12 @@ const Dashboard = () => {
     setIsFinalizing(true);
     setSaveStatus('idle');
     setTranscriptError(null);
+    renderCompletionToastShownRef.current = false;
     allBlobsRef.current = [file];
     setFinalAudioBlob(file);
     setRecordingSource('upload'); // It's an uploaded file
-    fullSummaryRef.current = "";
+    setSessionSummary('');
+    setIsGeneratingSummary(false);
     setFullTranscript([]);
     setModelIndicators(new Map());
     lastUsedProviderRef.current = null;
@@ -815,9 +880,8 @@ const Dashboard = () => {
               lastUsedProviderRef.current = usedProvider;
             }
 
-            // Update UI progressively
-            setFullTranscript([...allTranscripts]);
-            fullSummaryRef.current = allSummaries.join(' ');
+        // Update UI progressively
+        setFullTranscript([...allTranscripts]);
           } catch (err: any) {
             // Silently log error - do NOT add to transcript
             console.warn(`[Chunked Import] Chunk ${i + 1} failed (silently skipped):`, err.message);
@@ -825,14 +889,25 @@ const Dashboard = () => {
         }
 
         audioCtx.close();
+        if (allTranscripts.length === 0) {
+          setTranscriptError('Khong tao duoc transcript tu file. Vui long kiem tra file hoac cau hinh API.');
+        } else {
+          console.log('[Chunked Import] Generating final summary...');
+          setIsGeneratingSummary(true);
+          try {
+            const summary = await generateFinalSummary(allTranscripts);
+            setSessionSummary(summary);
+            if (summary) {
+              console.log('[Chunked Import] Summary generated successfully');
+            }
+          } finally {
+            setIsGeneratingSummary(false);
+          }
+        }
         setIsFinalizing(false);
         setCurrentTranscript("");
 
-        // Show naming modal
         setNewRecordingTitle(file.name.split('.')[0] || `Imported ${format(new Date(), 'yyyy-MM-dd HH:mm')}`);
-        setIsNamingModalOpen(true);
-        setHasAutoShownModal(true);
-        setShouldSave(true);
         console.log(`[Chunked Import] Complete! ${totalChunks} chunks processed, ${allTranscripts.length} transcript items.`);
       } catch (err: any) {
         console.error("[Chunked Import] Error:", err);
@@ -847,15 +922,22 @@ const Dashboard = () => {
         const result = await transcribeAudio(base64Audio, file.type || 'audio/mp4');
 
         setFullTranscript(result.transcript);
-        fullSummaryRef.current = result.summary;
+        console.log('[Direct Import] Generating final summary...');
+        setIsGeneratingSummary(true);
+        try {
+          const summary = await generateFinalSummary(result.transcript);
+          setSessionSummary(summary);
+          if (summary) {
+            console.log('[Direct Import] Summary generated successfully');
+          }
+        } finally {
+          setIsGeneratingSummary(false);
+        }
         setIsFinalizing(false);
         setCurrentTranscript("");
 
         setNewRecordingTitle(file.name.split('.')[0] || `Imported ${format(new Date(), 'yyyy-MM-dd HH:mm')}`);
-        setIsNamingModalOpen(true);
-        setHasAutoShownModal(true);
-        setShouldSave(true);
-        console.log("Import file completed. Waiting for user to name and save.");
+        console.log("Import file completed.");
       } catch (err: any) {
         setTranscriptError(parseFriendlyError(err.message));
         setCurrentTranscript("");
@@ -942,7 +1024,38 @@ const Dashboard = () => {
   };
 
   return (
-    <main className="flex-1 w-full max-w-5xl mx-auto px-6 pt-32 pb-12 flex flex-col items-center justify-center gap-16">
+    <main className="flex-1 mx-auto flex w-full max-w-6xl flex-col items-center justify-center gap-16 px-[15px] pt-32 pb-12">
+      <AnimatePresence>
+        {renderToast && (
+          <motion.div
+            role="status"
+            initial={{ opacity: 0, y: -24 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -16 }}
+            transition={{ duration: 0.22, ease: 'easeOut' }}
+            className={cn(
+              'fixed top-24 left-1/2 z-[110] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 rounded-2xl border px-5 py-4 shadow-2xl font-body text-sm font-semibold leading-snug',
+              renderToast.variant === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                : renderToast.variant === 'info'
+                  ? 'bg-sky-50 border-sky-200 text-sky-950'
+                  : 'bg-error text-white border-error',
+            )}
+          >
+            <div className="flex items-start gap-3">
+              {renderToast.variant === 'success' ? (
+                <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-600 mt-0.5" />
+              ) : renderToast.variant === 'info' ? (
+                <Info className="w-5 h-5 shrink-0 text-sky-600 mt-0.5" />
+              ) : (
+                <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+              )}
+              <span>{renderToast.message}</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Naming Modal */}
       <AnimatePresence>
         {isNamingModalOpen && (
@@ -978,15 +1091,17 @@ const Dashboard = () => {
                 </div>
                 <div className="flex gap-3 pt-4">
                   <button
+                    type="button"
                     onClick={() => setIsNamingModalOpen(false)}
-                    className="flex-1 px-6 py-3 rounded-xl font-bold text-on-surface-variant hover:bg-surface-container-high transition-colors"
+                    className="flex-1 px-6 py-3 rounded-xl font-bold text-on-surface-variant hover:bg-surface-container-high transition-colors cursor-pointer"
                   >
                     Discard
                   </button>
                   <button
+                    type="button"
                     onClick={() => saveToSupabase(newRecordingTitle)}
                     disabled={saveStatus === 'saving'}
-                    className="flex-1 bg-primary text-white px-6 py-3 rounded-xl font-bold shadow-lg hover:shadow-primary/20 transition-all disabled:opacity-50"
+                    className="flex-1 bg-primary text-white px-6 py-3 rounded-xl font-bold shadow-lg hover:shadow-primary/20 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {saveStatus === 'saving' ? 'Saving...' : 'Save Now'}
                   </button>
@@ -1013,14 +1128,16 @@ const Dashboard = () => {
               </p>
               <div className="flex gap-3">
                 <button
+                  type="button"
                   onClick={() => setIsResetModalOpen(false)}
-                  className="flex-1 px-6 py-3 rounded-xl font-bold text-on-surface-variant hover:bg-surface-container-high transition-colors"
+                  className="flex-1 px-6 py-3 rounded-xl font-bold text-on-surface-variant hover:bg-surface-container-high transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
+                  type="button"
                   onClick={resetRecording}
-                  className="flex-1 bg-error text-white px-6 py-3 rounded-xl font-bold shadow-lg hover:shadow-error/20 transition-all"
+                  className="flex-1 bg-error text-white px-6 py-3 rounded-xl font-bold shadow-lg hover:shadow-error/20 transition-all cursor-pointer"
                 >
                   Reset Now
                 </button>
@@ -1030,8 +1147,8 @@ const Dashboard = () => {
         )}
       </AnimatePresence>
 
-      <section className="w-full flex flex-col items-center gap-8">
-        <div className="relative group flex flex-col items-center gap-6">
+      <section className="flex w-full max-w-6xl flex-col items-center gap-8">
+        <div className="relative group flex w-full flex-col items-center gap-6">
           <div className="flex items-center gap-4">
             <div className="relative">
               <div className={cn(
@@ -1042,7 +1159,7 @@ const Dashboard = () => {
                 onClick={isRecording ? stopRecording : startRecording}
                 disabled={isProcessing}
                 className={cn(
-                  "relative w-24 h-24 rounded-full flex items-center justify-center text-white shadow-2xl transition-all active:scale-90 hover:scale-105 group disabled:opacity-50",
+                  "relative w-24 h-24 rounded-full flex items-center justify-center text-white shadow-2xl transition-all active:scale-90 hover:scale-105 group cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
                   isRecording ? "bg-error" : "bg-gradient-to-br from-primary to-secondary"
                 )}
               >
@@ -1055,7 +1172,7 @@ const Dashboard = () => {
                 onClick={isPaused ? resumeRecording : pauseRecording}
                 disabled={isProcessing}
                 className={cn(
-                  "w-16 h-16 rounded-full flex items-center justify-center shadow-xl transition-all active:scale-90 disabled:opacity-50 disabled:cursor-not-allowed",
+                  "w-16 h-16 rounded-full flex items-center justify-center shadow-xl transition-all active:scale-90 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
                   isPaused ? "bg-primary text-white" : "bg-surface-container-high text-on-surface"
                 )}
               >
@@ -1075,7 +1192,7 @@ const Dashboard = () => {
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   disabled={isProcessing}
-                  className="w-16 h-16 rounded-full bg-surface-container-high text-on-surface flex items-center justify-center shadow-xl transition-all active:scale-90 hover:bg-surface-container-highest disabled:opacity-50"
+                  className="w-16 h-16 rounded-full bg-surface-container-high text-on-surface flex items-center justify-center shadow-xl transition-all active:scale-90 hover:bg-surface-container-highest cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                   title="Import file âm thanh"
                 >
                   <Upload className="w-6 h-6" />
@@ -1085,67 +1202,103 @@ const Dashboard = () => {
           </div>
 
           {lastAudioUrl && !isRecording && (
-            <div className="w-full max-w-2xl bg-surface-container-lowest p-6 rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-outline-variant/10 flex flex-col gap-6">
-              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                    <Mic className="w-5 h-5 text-primary" />
+            <div className="flex w-full flex-col gap-6 scroll-mt-28 xl:flex-row xl:items-start">
+              <div
+                ref={recordingResultCardRef}
+                className="relative flex min-w-0 flex-1 flex-col gap-6 overflow-hidden rounded-2xl border-2 border-primary/25 bg-gradient-to-b from-surface via-surface-container-lowest to-primary/5 p-6 shadow-[0_16px_48px_-12px_rgba(79,70,229,0.22)] ring-1 ring-primary/10"
+              >
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-primary via-secondary to-primary opacity-80"
+                />
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/15 shadow-inner ring-2 ring-primary/10">
+                      <Mic className="h-6 w-6 text-primary" />
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-black uppercase tracking-[0.2em] text-primary/80">Bản ghi vừa hoàn tất</p>
+                      <h4 className="font-headline text-lg font-bold text-on-surface">{newRecordingTitle || "Chưa đặt tên"}</h4>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface-variant opacity-60">Bản ghi vừa hoàn tất</p>
-                    <h4 className="font-headline font-bold text-on-surface">{newRecordingTitle || "Chưa đặt tên"}</h4>
+
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 sm:flex-nowrap">
+                    {saveStatus !== 'success' && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setIsNamingModalOpen(true)}
+                          disabled={isProcessing}
+                          className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-primary via-primary to-secondary px-5 py-2.5 text-sm font-black uppercase tracking-wide text-white shadow-[0_8px_24px_-4px_rgba(79,70,229,0.55)] ring-2 ring-white/25 transition-all hover:scale-[1.02] hover:shadow-[0_12px_28px_-4px_rgba(79,70,229,0.6)] active:scale-[0.98] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100 disabled:hover:shadow-[0_8px_24px_-4px_rgba(79,70,229,0.55)]"
+                        >
+                          <Save className="h-4 w-4" />
+                          Lưu bản ghi
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsResetModalOpen(true)}
+                          disabled={isProcessing}
+                          className="flex cursor-pointer items-center gap-2 rounded-xl bg-surface-container-high px-4 py-2.5 text-xs font-bold text-error transition-all hover:bg-error/10 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <RotateCcw className="h-3.5 w-3.5" />
+                          Hủy
+                        </button>
+                      </>
+                    )}
+                    {fullTranscript.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => exportToWord(newRecordingTitle || "Recording", fullTranscript)}
+                        disabled={isProcessing}
+                        className="flex cursor-pointer items-center gap-2 rounded-xl border border-primary/25 bg-primary/10 px-4 py-2.5 text-xs font-bold text-primary transition-all hover:bg-primary/15 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <FileText className="h-3.5 w-3.5" />
+                        Xuất Word
+                      </button>
+                    )}
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  {saveStatus !== 'success' && (
-                    <>
-                      <button
-                        onClick={() => setIsNamingModalOpen(true)}
-                        disabled={isProcessing}
-                        className="flex items-center gap-2 px-4 py-2 bg-primary text-white rounded-xl text-xs font-bold shadow-lg shadow-primary/20 hover:scale-105 transition-all active:scale-95 disabled:opacity-50 disabled:hover:scale-100"
-                      >
-                        <Save className="w-3.5 h-3.5" />
-                        Lưu bản ghi
-                      </button>
-                      <button
-                        onClick={() => setIsResetModalOpen(true)}
-                        disabled={isProcessing}
-                        className="flex items-center gap-2 px-4 py-2 bg-surface-container-high text-error rounded-xl text-xs font-bold hover:bg-error/10 transition-all active:scale-95 disabled:opacity-50"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        Hủy
-                      </button>
-                    </>
-                  )}
-                  {fullTranscript.length > 0 && (
-                    <button
-                      onClick={() => exportToWord(newRecordingTitle || "Recording", fullTranscript)}
-                      disabled={isProcessing}
-                      className="flex items-center gap-2 px-4 py-2 bg-surface-container-high text-primary rounded-xl text-xs font-bold hover:bg-primary/10 transition-all active:scale-95 disabled:opacity-50"
-                    >
-                      <FileText className="w-3.5 h-3.5" />
-                      Xuất Word
-                    </button>
-                  )}
-                </div>
+                {recordingSource === 'upload' ? (
+                  <SyncedTranscriptPlayer
+                    audioSrc={lastAudioUrl}
+                    transcript={fullTranscript}
+                    modelIndicators={modelIndicators}
+                  />
+                ) : (
+                  <div className="rounded-xl border border-outline-variant/10 bg-surface-container-low p-4">
+                    <audio src={lastAudioUrl} controls className="h-10 w-full cursor-pointer" />
+                  </div>
+                )}
               </div>
 
-              {recordingSource === 'upload' ? (
-                <SyncedTranscriptPlayer
-                  audioSrc={lastAudioUrl}
-                  transcript={fullTranscript}
-                  modelIndicators={modelIndicators}
-                />
-              ) : (
-                <div className="bg-surface-container-low p-4 rounded-xl border border-outline-variant/10">
-                   <audio
-                      src={lastAudioUrl}
-                      controls
-                      className="w-full h-10"
-                    />
-                </div>
-              )}
+              {(isGeneratingSummary || sessionSummary.trim()) && fullTranscript.length > 0 && !transcriptError ? (
+                <aside className="flex w-full flex-col overflow-hidden rounded-xl border-2 border-primary/25 bg-gradient-to-b from-primary-fixed/20 to-surface-container-lowest/90 shadow-[0_12px_40px_-16px_rgba(79,70,229,0.35)] ring-1 ring-primary/10 xl:max-h-[calc(100vh-8rem)] xl:min-h-0 xl:w-[min(100%,22rem)] xl:shrink-0 xl:sticky xl:top-28 xl:self-start">
+                  <h4 className="shrink-0 border-b border-primary/25 bg-surface px-4 py-3 font-headline text-xs font-bold uppercase tracking-wider text-primary">
+                    Tóm tắt AI (xem trước)
+                  </h4>
+                  <p className="shrink-0 border-b border-primary/10 px-4 py-2 text-[11px] leading-relaxed text-on-surface-variant">
+                    Bạn có thể vào bản tóm tắt này trong Admin
+                  </p>
+                  <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
+                    {isGeneratingSummary ? (
+                      <div className="flex flex-col items-center justify-center gap-4 py-6 text-center">
+                        <Loader2 className="h-12 w-12 shrink-0 animate-spin text-primary" aria-hidden />
+                        <div className="space-y-1.5">
+                          <p className="text-sm font-semibold leading-snug text-on-surface">
+                            AI đang tóm tắt nội dung cuộc trò chuyện, chờ tí nhé
+                          </p>
+                          <p className="text-xs leading-relaxed text-on-surface-variant">
+                            (Không bắt buộc — bạn vẫn có thể nghe audio và đọc transcript bên trái.)
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <AiSummaryBlock text={sessionSummary} />
+                    )}
+                  </div>
+                </aside>
+              ) : null}
             </div>
           )}
         </div>
@@ -1164,17 +1317,17 @@ const Dashboard = () => {
               key={i}
               className={cn(
                 "w-1.5 rounded-full transition-all duration-300",
-                (isRecording || isProcessing) ? "bg-primary waveform-bar" : "bg-surface-container-highest h-2"
+                (isRecording || isProcessing || isGeneratingSummary) ? "bg-primary waveform-bar" : "bg-surface-container-highest h-2"
               )}
-              style={{ animationDelay: `${i * 0.1}s`, height: (isRecording || isProcessing) ? undefined : `${[2, 4, 3, 6, 4, 2, 5, 3][i] * 4}px` }}
+              style={{ animationDelay: `${i * 0.1}s`, height: (isRecording || isProcessing || isGeneratingSummary) ? undefined : `${[2, 4, 3, 6, 4, 2, 5, 3][i] * 4}px` }}
             ></div>
           ))}
         </div>
       </section>
 
-      <section className="w-full max-w-4xl">
-        <div className="bg-surface-container-lowest rounded-2xl p-10 shadow-[0_20px_40px_-10px_rgba(19,27,46,0.04)] border border-outline-variant/10 min-h-[400px]">
-          <div className="flex items-center justify-between mb-8">
+      <section ref={transcriptPanelRef} className="w-full max-w-6xl scroll-mt-28">
+        <div className="min-h-[400px] rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-10 shadow-[0_20px_40px_-10px_rgba(19,27,46,0.04)]">
+          <div className="mb-8 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <span className={cn("w-2 h-2 rounded-full", isRecording ? "bg-error animate-pulse" : "bg-tertiary")}></span>
               <span className="text-xs font-bold uppercase tracking-widest text-on-surface-variant font-headline">
@@ -1195,6 +1348,7 @@ const Dashboard = () => {
               )}
             </div>
           </div>
+
           <div className="space-y-6 leading-relaxed">
             {recordingSource === 'live' && fullTranscript.length > 0 && !transcriptError ? (
                <div className="space-y-6">
@@ -1261,14 +1415,16 @@ const Dashboard = () => {
                 </div>
                 <div className="flex gap-2 pl-14">
                   <button
+                    type="button"
                     onClick={() => { setTranscriptError(null); setCurrentTranscript(''); }}
-                    className="text-xs bg-surface-container-low hover:bg-surface-container-high border border-outline-variant/20 rounded-lg px-3 py-1.5 font-medium transition-colors"
+                    className="text-xs bg-surface-container-low hover:bg-surface-container-high border border-outline-variant/20 rounded-lg px-3 py-1.5 font-medium transition-colors cursor-pointer"
                   >
                     Bo qua
                   </button>
                   <button
+                    type="button"
                     onClick={() => window.location.href = '/admin'}
-                    className="text-xs bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 rounded-lg px-3 py-1.5 font-medium transition-colors"
+                    className="text-xs bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 rounded-lg px-3 py-1.5 font-medium transition-colors cursor-pointer"
                   >
                     Kiem tra API Key
                   </button>
@@ -1366,6 +1522,8 @@ const Dashboard = () => {
           <p className="text-sm text-on-surface-variant">Dữ liệu của bạn được mã hóa và lưu trữ an toàn trên đám mây.</p>
         </div>
       </section>
+
+      <GoTopButton />
     </main>
   );
 };
@@ -1466,7 +1624,68 @@ const AdminDashboard = () => {
   const [showGroqKey, setShowGroqKey] = useState(false);
   const [claudeKey, setClaudeKey] = useState<string>(() => getAIConfig().claudeApiKey);
   const [showClaudeKey, setShowClaudeKey] = useState(false);
+  const [nvidiaKey, setNvidiaKey] = useState<string>(() => getAIConfig().nvidiaNimApiKey);
+  const [nvidiaModel, setNvidiaModel] = useState<string>(() => getAIConfig().nvidiaNimModel);
+  const [showNvidiaKey, setShowNvidiaKey] = useState(false);
   const [apiSaveStatus, setApiSaveStatus] = useState<'idle' | 'saved'>('idle');
+  const [providerPriorityOrder, setProviderPriorityOrder] = useState<AIProvider[]>(() => getProviderPriority(getAIConfig()));
+  const [disabledProviders, setDisabledProviders] = useState<AIProvider[]>(() => getAIConfig().disabledProviders ?? []);
+  const dragPriorityFrom = useRef<number | null>(null);
+
+  const toggleProviderDisabled = (p: AIProvider) => {
+    setDisabledProviders((prev) => (prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]));
+  };
+
+  const adminAiConfigPayload = {
+    provider: aiProvider,
+    enableMultiModel,
+    openaiApiKey: openaiKey,
+    groqApiKey: groqKey,
+    claudeApiKey: claudeKey,
+    nvidiaNimApiKey: nvidiaKey,
+    nvidiaNimModel: nvidiaModel,
+    providerPriorityOrder,
+    disabledProviders,
+  };
+
+  const providerAdminStatus = (p: AIProvider) => {
+    const en = isProviderEnabled(p, adminAiConfigPayload);
+    const cred = providerHasCredentials(p, adminAiConfigPayload);
+    if (!en) return { kind: 'paused' as const };
+    if (!cred) return { kind: 'missing' as const };
+    return { kind: 'ready' as const };
+  };
+
+  const AdminProviderEnableSwitch = ({ providerId }: { providerId: AIProvider }) => {
+    const enabled = isProviderEnabled(providerId, adminAiConfigPayload);
+    return (
+      <div className="mb-3 flex flex-col gap-1 rounded-lg border border-outline-variant/15 bg-surface-container-low/60 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-on-surface">Bật dùng provider</p>
+          <p className="text-[10px] text-on-surface-variant">Tắt để tạm không gọi API (giữ nguyên key).</p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          aria-label={`${PROVIDER_ORDER_LABELS[providerId]}: ${enabled ? 'đang bật' : 'đang tắt'}`}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => toggleProviderDisabled(providerId)}
+          className={cn(
+            'relative h-7 w-12 shrink-0 rounded-full transition-colors',
+            enabled ? 'bg-primary' : 'bg-surface-container-highest',
+          )}
+        >
+          <span
+            className={cn(
+              'absolute left-0.5 top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform',
+              enabled ? 'translate-x-5' : 'translate-x-0',
+            )}
+          />
+        </button>
+      </div>
+    );
+  };
 
   useEffect(() => {
     fetchRecordings();
@@ -1630,7 +1849,7 @@ const AdminDashboard = () => {
   };
 
   return (
-    <div className="flex flex-1 pt-16">
+    <div className="flex min-w-0 flex-1 pt-16">
       <aside className="h-screen w-64 fixed left-0 top-0 pt-20 bg-surface-container-low flex flex-col gap-2 p-4 border-r border-surface-container-low z-40">
         <div className="mb-6 px-2">
           <div className="flex items-center gap-3 mb-1">
@@ -1679,8 +1898,8 @@ const AdminDashboard = () => {
         </div>
       </aside>
 
-      <main className="flex-1 ml-64 p-8 bg-surface">
-        <div className="max-w-6xl mx-auto">
+      <main className="flex-1 ml-64 min-w-0 px-[15px] py-8 bg-surface">
+        <div className="w-full">
           {activeTab === 'recordings' ? (
             <>
               <header className="mb-10 flex flex-col md:flex-row md:items-end justify-between gap-6">
@@ -1799,81 +2018,85 @@ const AdminDashboard = () => {
                   })()}
                 </div>
 
-                <div className="lg:col-span-8 space-y-6">
+                <div className="lg:col-span-8">
                   {selectedRecording ? (
-                    <>
-                      <div className="bg-surface-container-lowest rounded-xl p-6 shadow-sm border border-outline-variant/10">
-                        <div className="flex items-center justify-between mb-8">
-                          <div className="flex items-center gap-4">
-                            <button className="bg-primary-fixed p-3 rounded-full text-primary">
-                              <Play className="w-6 h-6 fill-current" />
-                            </button>
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <h2 className="text-xl font-headline font-extrabold text-on-surface">{selectedRecording.title}</h2>
-                                <button
-                                  onClick={() => {
-                                    setItemToEdit(selectedRecording.id);
-                                    setEditTitleValue(selectedRecording.title);
-                                    setIsRenameModalOpen(true);
-                                  }}
-                                  className="p-1.5 hover:bg-surface-container-high rounded-lg text-on-surface-variant transition-colors"
-                                  title="Đổi tên"
-                                >
-                                  <Edit3 className="w-4 h-4" />
-                                </button>
+                    <div className="flex flex-col xl:flex-row xl:items-start gap-6">
+                      <div className="min-w-0 flex-1 space-y-6">
+                        <div className="bg-surface-container-lowest rounded-xl p-6 shadow-sm border border-outline-variant/10">
+                          <div className="flex items-center justify-between mb-8">
+                            <div className="flex items-center gap-4">
+                              <button type="button" className="bg-primary-fixed p-3 rounded-full text-primary">
+                                <Play className="w-6 h-6 fill-current" />
+                              </button>
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <h2 className="text-xl font-headline font-extrabold text-on-surface">{selectedRecording.title}</h2>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setItemToEdit(selectedRecording.id);
+                                      setEditTitleValue(selectedRecording.title);
+                                      setIsRenameModalOpen(true);
+                                    }}
+                                    className="p-1.5 hover:bg-surface-container-high rounded-lg text-on-surface-variant transition-colors"
+                                    title="Đổi tên"
+                                  >
+                                    <Edit3 className="w-4 h-4" />
+                                  </button>
+                                </div>
+                                <p className="text-sm text-on-surface-variant">
+                                  {format(new Date(selectedRecording.created_at), 'dd/MM/yyyy HH:mm')} • {formatDuration(selectedRecording.duration)}
+                                </p>
                               </div>
-                              <p className="text-sm text-on-surface-variant">
-                                {format(new Date(selectedRecording.created_at), 'dd/MM/yyyy HH:mm')} • {formatDuration(selectedRecording.duration)}
-                              </p>
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => exportToWord(selectedRecording.title, selectedRecording.transcript)}
+                                className="p-2 text-on-surface-variant hover:text-primary transition-colors"
+                                title="Xuất Word"
+                              >
+                                <FileText className="w-5 h-5" />
+                              </button>
+                              <button type="button" onClick={() => toggleImportant(selectedRecording.id, selectedRecording.is_important)} className={cn("p-2 transition-colors", selectedRecording.is_important ? "text-yellow-500" : "text-on-surface-variant hover:text-yellow-500")}>
+                                <Star className={cn("w-5 h-5", selectedRecording.is_important && "fill-current")} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setItemToDelete(selectedRecording);
+                                  setIsDeleteModalOpen(true);
+                                }}
+                                className="p-2 text-on-surface-variant hover:text-error transition-colors"
+                              >
+                                <Trash2 className="w-5 h-5" />
+                              </button>
                             </div>
                           </div>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => exportToWord(selectedRecording.title, selectedRecording.transcript)}
-                              className="p-2 text-on-surface-variant hover:text-primary transition-colors"
-                              title="Xuất Word"
-                            >
-                              <FileText className="w-5 h-5" />
-                            </button>
-                            <button onClick={() => toggleImportant(selectedRecording.id, selectedRecording.is_important)} className={cn("p-2 transition-colors", selectedRecording.is_important ? "text-yellow-500" : "text-on-surface-variant hover:text-yellow-500")}>
-                              <Star className={cn("w-5 h-5", selectedRecording.is_important && "fill-current")} />
-                            </button>
-                            <button
-                              onClick={() => {
-                                setItemToDelete(selectedRecording);
-                                setIsDeleteModalOpen(true);
-                              }}
-                              className="p-2 text-on-surface-variant hover:text-error transition-colors"
-                            >
-                              <Trash2 className="w-5 h-5" />
-                            </button>
-                          </div>
-                        </div>
 
-                        {selectedRecording.source === 'upload' ? (
-                          <SyncedTranscriptPlayer
-                            audioSrc={selectedRecording.audio_url}
-                            transcript={selectedRecording.transcript}
-                          />
-                        ) : (
-                          <>
-                             <audio controls src={selectedRecording.audio_url} className="w-full mb-6" />
-                             <div className="space-y-6">
-                              {selectedRecording.transcript.map((item, idx) => (
-                                <div key={idx} className="flex gap-4">
-                                   <div className="shrink-0">
+                          {selectedRecording.source === 'upload' ? (
+                            <SyncedTranscriptPlayer
+                              audioSrc={selectedRecording.audio_url}
+                              transcript={selectedRecording.transcript}
+                            />
+                          ) : (
+                            <>
+                              <audio controls src={selectedRecording.audio_url} className="w-full mb-6 cursor-pointer" />
+                              <div className="space-y-6">
+                                {selectedRecording.transcript.map((item, idx) => (
+                                  <div key={idx} className="flex gap-4">
+                                    <div className="shrink-0">
                                       <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-surface-container-highest text-on-surface-variant opacity-50">{item.timestamp}</span>
-                                   </div>
-                                   <div className="flex-1">
+                                    </div>
+                                    <div className="flex-1">
                                       <div className="flex items-center gap-2 mb-1">
-                                         <span className={cn(
-                                            "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
-                                            item.gender === 'Nam' ? "bg-blue-100 text-blue-700" :
-                                              item.gender === 'Nữ' ? "bg-pink-100 text-pink-700" : "bg-surface-container-highest text-on-surface-variant"
-                                          )}>
-                                            {item.speaker} {item.gender ? `• ${item.gender}` : ""}
-                                          </span>
+                                        <span className={cn(
+                                          "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
+                                          item.gender === 'Nam' ? "bg-blue-100 text-blue-700" :
+                                            item.gender === 'Nữ' ? "bg-pink-100 text-pink-700" : "bg-surface-container-highest text-on-surface-variant"
+                                        )}>
+                                          {item.speaker} {item.gender ? `• ${item.gender}` : ""}
+                                        </span>
                                       </div>
                                       <p className={cn(
                                         "text-base leading-relaxed font-body",
@@ -1881,21 +2104,26 @@ const AdminDashboard = () => {
                                       )}>
                                         {item.text}
                                       </p>
-                                   </div>
-                                </div>
-                              ))}
-                             </div>
-                          </>
-                        )}
-
-                        {selectedRecording.summary && (
-                          <div className="bg-primary-fixed/20 p-4 rounded-lg border border-primary-fixed mt-6">
-                            <h4 className="font-headline font-bold text-sm text-primary mb-1 uppercase tracking-wider">Tóm tắt AI</h4>
-                            <p className="text-on-surface text-sm leading-relaxed">{selectedRecording.summary}</p>
-                          </div>
-                        )}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </div>
                       </div>
-                    </>
+
+                      {selectedRecording.summary?.trim() ? (
+                        <aside className="flex w-full flex-col overflow-hidden rounded-xl border-2 border-primary/25 bg-gradient-to-b from-primary-fixed/20 to-surface-container-lowest/90 shadow-[0_12px_40px_-16px_rgba(79,70,229,0.35)] ring-1 ring-primary/10 xl:max-h-[calc(100vh-7rem)] xl:min-h-0 xl:w-[min(100%,24rem)] xl:shrink-0 xl:sticky xl:top-24 xl:self-start">
+                          <h4 className="shrink-0 border-b border-primary/25 bg-surface px-4 py-3 font-headline text-xs font-bold uppercase tracking-wider text-primary">
+                            Tóm tắt AI
+                          </h4>
+                          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
+                            <AiSummaryBlock text={selectedRecording.summary} />
+                          </div>
+                        </aside>
+                      ) : null}
+                    </div>
                   ) : (
                     <div className="bg-surface-container-lowest rounded-xl p-20 shadow-sm border border-outline-variant/10 flex flex-col items-center justify-center text-center">
                       <Mic className="w-16 h-16 text-surface-container-highest mb-4" />
@@ -1905,6 +2133,7 @@ const AdminDashboard = () => {
                   )}
                 </div>
               </div>
+              <GoTopButton />
             </>
           ) : (
             <>
@@ -1942,16 +2171,22 @@ const AdminDashboard = () => {
                         </p>
                         {enableMultiModel && (
                           <div className="flex items-center gap-1.5 mt-3 flex-wrap">
-                            {PROVIDER_PRIORITY.map((p, i) => {
-                              const available = isProviderAvailable(p, { provider: aiProvider, enableMultiModel, openaiApiKey: openaiKey, groqApiKey: groqKey, claudeApiKey: claudeKey });
+                            {providerPriorityOrder.map((p, i) => {
+                              const st = providerAdminStatus(p);
                               return (
                                 <React.Fragment key={p}>
-                                  <span className={cn("text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider border",
-                                    available ? "bg-green-50 text-green-700 border-green-200" : "bg-surface-container text-on-surface-variant/40 border-outline-variant/10 line-through"
-                                  )}>
-                                    {p}
+                                  <span
+                                    className={cn(
+                                      'text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider border',
+                                      st.kind === 'ready' && 'border-green-200 bg-green-50 text-green-700',
+                                      st.kind === 'paused' && 'border-amber-200 bg-amber-50 text-amber-900',
+                                      st.kind === 'missing' && 'border-outline-variant/10 bg-surface-container text-on-surface-variant/50 line-through',
+                                    )}
+                                  >
+                                    {PROVIDER_ORDER_LABELS[p]}
+                                    {st.kind === 'paused' ? ' · tắt' : st.kind === 'missing' ? ' · thiếu key' : ''}
                                   </span>
-                                  {i < PROVIDER_PRIORITY.length - 1 && (
+                                  {i < providerPriorityOrder.length - 1 && (
                                     <ChevronRight className="w-3 h-3 text-on-surface-variant/30" />
                                   )}
                                 </React.Fragment>
@@ -1971,16 +2206,100 @@ const AdminDashboard = () => {
                         )} />
                       </button>
                     </div>
+                    {enableMultiModel && (
+                      <div className="mt-4 border-t border-outline-variant/15 pt-4">
+                        <p className="mb-2 text-xs font-bold text-on-surface">Thứ tự ưu tiên (kéo thả)</p>
+                        <p className="mb-2 text-[11px] leading-relaxed text-on-surface-variant">
+                          Kéo từng dòng để đổi thứ tự fallback. Nhấn &quot;Lưu cài đặt&quot; để áp dụng.
+                        </p>
+                        <ul className="space-y-1.5">
+                          {providerPriorityOrder.map((p, i) => {
+                            const st = providerAdminStatus(p);
+                            const rowDimmed = st.kind !== 'ready';
+                            return (
+                              <li
+                                key={p}
+                                draggable
+                                onDragStart={() => {
+                                  dragPriorityFrom.current = i;
+                                }}
+                                onDragEnd={() => {
+                                  dragPriorityFrom.current = null;
+                                }}
+                                onDragOver={(e) => e.preventDefault()}
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  const from = dragPriorityFrom.current;
+                                  dragPriorityFrom.current = null;
+                                  if (from === null || from === i) return;
+                                  setProviderPriorityOrder((prev) => {
+                                    const next = [...prev];
+                                    const [item] = next.splice(from, 1);
+                                    next.splice(i, 0, item);
+                                    return next;
+                                  });
+                                }}
+                                className={cn(
+                                  'flex cursor-grab items-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-bold transition-colors active:cursor-grabbing',
+                                  rowDimmed
+                                    ? 'border-outline-variant/20 bg-surface-container text-on-surface-variant/80'
+                                    : 'border-primary/20 bg-surface-container-lowest text-on-surface',
+                                )}
+                              >
+                                <GripVertical className="h-4 w-4 shrink-0 text-on-surface-variant" aria-hidden />
+                                <span className="min-w-0 flex-1">{PROVIDER_ORDER_LABELS[p]}</span>
+                                <button
+                                  type="button"
+                                  role="switch"
+                                  aria-checked={isProviderEnabled(p, adminAiConfigPayload)}
+                                  aria-label="Toggle provider on/off"
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  onClick={() => toggleProviderDisabled(p)}
+                                  className={cn(
+                                    'relative h-6 w-11 shrink-0 rounded-full transition-colors',
+                                    isProviderEnabled(p, adminAiConfigPayload) ? 'bg-primary' : 'bg-surface-container-highest',
+                                  )}
+                                >
+                                  <span
+                                    className={cn(
+                                      'absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform',
+                                      isProviderEnabled(p, adminAiConfigPayload) ? 'translate-x-5' : 'translate-x-0',
+                                    )}
+                                  />
+                                </button>
+                                <span
+                                  className={cn(
+                                    'min-w-[4.5rem] shrink-0 rounded px-1.5 py-0.5 text-center text-[9px] font-bold uppercase',
+                                    st.kind === 'ready' && 'bg-green-100 text-green-800',
+                                    st.kind === 'paused' && 'bg-amber-100 text-amber-900',
+                                    st.kind === 'missing' && 'bg-surface-container-highest text-on-surface-variant',
+                                  )}
+                                >
+                                  {st.kind === 'ready' ? 'Sẵn sàng' : st.kind === 'paused' ? 'Tạm tắt' : 'Thiếu key'}
+                                </span>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    )}
                   </div>
 
                   {/* Provider selector (only shown when multi-model is OFF) */}
                   {!enableMultiModel && (
-                    <div className="grid grid-cols-2 gap-3 mb-8">
+                    <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-3">
                       {([
                         {
                           id: 'gemini' as AIProvider, label: 'Google Gemini', color: 'primary', desc: 'Multimodal (Free)', icon: (
                             <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" fill="currentColor">
                               <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z" />
+                            </svg>
+                          )
+                        },
+                        {
+                          id: 'nvidiaNim' as AIProvider, label: 'NVIDIA NIM', color: '#76b900', desc: 'Gemma / chat API', icon: (
+                            <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" fill="currentColor">
+                              <path d="M8.5 14.5L12 12l3.5 2.5L12 17l-3.5-2.5zM12 7l3.5 2.5L12 12 8.5 9.5 12 7z" />
                             </svg>
                           )
                         },
@@ -2007,11 +2326,13 @@ const AdminDashboard = () => {
                         },
                       ]).map(({ id, label, color, desc, icon }) => {
                         const isActive = aiProvider === id;
+                        const paused = !isProviderEnabled(id, adminAiConfigPayload);
                         const borderColor = isActive
                           ? id === 'gemini' ? 'border-primary bg-primary/5 text-primary'
-                            : id === 'openai' ? 'border-[#10a37f] bg-[#10a37f]/5 text-[#10a37f]'
-                              : id === 'groq' ? 'border-[#f55036] bg-[#f55036]/5 text-[#f55036]'
-                                : 'border-[#d97706] bg-[#d97706]/5 text-[#d97706]'
+                            : id === 'nvidiaNim' ? 'border-[#76b900] bg-[#76b900]/5 text-[#5a8f00]'
+                              : id === 'openai' ? 'border-[#10a37f] bg-[#10a37f]/5 text-[#10a37f]'
+                                : id === 'groq' ? 'border-[#f55036] bg-[#f55036]/5 text-[#f55036]'
+                                  : 'border-[#d97706] bg-[#d97706]/5 text-[#d97706]'
                           : 'border-surface-container-high text-on-surface-variant hover:border-outline-variant';
                         return (
                           <button
@@ -2019,7 +2340,8 @@ const AdminDashboard = () => {
                             onClick={() => setAIProvider(id)}
                             className={cn(
                               "flex flex-col items-center justify-center gap-1.5 px-4 py-4 rounded-xl border-2 font-bold text-sm transition-all duration-200",
-                              borderColor
+                              borderColor,
+                              paused && "opacity-60",
                             )}
                           >
                             <div className="flex items-center gap-2">
@@ -2028,6 +2350,9 @@ const AdminDashboard = () => {
                               {isActive && <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />}
                             </div>
                             <span className={cn("text-[10px] font-medium", isActive ? "opacity-80" : "text-on-surface-variant")}>{desc}</span>
+                            {paused && (
+                              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-900">Tạm tắt</span>
+                            )}
                           </button>
                         );
                       })}
@@ -2039,6 +2364,8 @@ const AdminDashboard = () => {
                     <>
                       {/* Gemini: show env status, no editable key */}
                       {aiProvider === 'gemini' && (
+                        <>
+                        <AdminProviderEnableSwitch providerId="gemini" />
                         <div className="bg-primary/5 border border-primary/15 rounded-xl p-5 flex items-start gap-4">
                           <div className={cn("w-10 h-10 rounded-full flex items-center justify-center shrink-0", process.env.GEMINI_API_KEY ? "bg-green-100" : "bg-error/10")}>
                             <ShieldCheck className={cn("w-5 h-5", process.env.GEMINI_API_KEY ? "text-green-600" : "text-error")} />
@@ -2050,7 +2377,10 @@ const AdminDashboard = () => {
                                 {process.env.GEMINI_API_KEY ? 'Đã cấu hình' : 'Chưa có key'}
                               </span>
                             </div>
-                            <p className="text-xs text-on-surface-variant">Key được đọc từ biến môi trường <code className="bg-surface-container px-1 rounded">GEMINI_API_KEY</code>. Model và prompt giữ nguyên như cấu hình gốc.</p>
+                            <p className="text-xs text-on-surface-variant">
+                              Key: <code className="rounded bg-surface-container px-1">GEMINI_API_KEY</code>.
+                              Model cho tóm tắt / cấu trúc text: <code className="rounded bg-surface-container px-1">GEMINI_TEXT_MODEL</code> (mặc định <code className="rounded bg-surface-container px-1">gemini-2.0-flash</code>; thử <code className="rounded bg-surface-container px-1">gemini-2.5-flash</code> hoặc <code className="rounded bg-surface-container px-1">gemini-1.5-pro</code> nếu cần). Ghi âm trực tiếp qua Gemini vẫn dùng model trong code (<code className="rounded bg-surface-container px-1">gemini-2.5-flash</code>).
+                            </p>
                             <a
                               href={GEMINI_API_KEYS_URL}
                               target="_blank"
@@ -2061,11 +2391,72 @@ const AdminDashboard = () => {
                             </a>
                           </div>
                         </div>
+                        </>
+                      )}
+
+                      {aiProvider === 'nvidiaNim' && (
+                        <div className="space-y-4">
+                          <AdminProviderEnableSwitch providerId="nvidiaNim" />
+                          <div className="flex items-start gap-4 rounded-xl border border-[#76b900]/25 bg-[#76b900]/5 p-5">
+                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#76b900]/15">
+                              <ExternalLink className="h-5 w-5 text-[#5a8f00]" />
+                            </div>
+                            <div className="flex-1">
+                              <p className="text-sm font-bold text-on-surface">NVIDIA NIM</p>
+                              <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
+                                NIM <strong>không</strong> gọi API Google Gemini; đây là endpoint NVIDIA (chat kiểu OpenAI). Muốn model cùng “họ Google” trên catalog thì dùng <strong>Gemma</strong> (ví dụ <code className="rounded bg-surface-container px-1">google/gemma-2-27b-it</code>), không dùng được chuỗi <code className="rounded bg-surface-container px-1">gemini-2.5-flash</code> như bên AI Studio. STT vẫn là Whisper (Groq/OpenAI). CORS: dùng <code className="rounded bg-surface-container px-1">npm run dev</code> hoặc <code className="rounded bg-surface-container px-1">VITE_NVIDIA_NIM_CHAT_URL</code>.
+                              </p>
+                              <a
+                                href={NVIDIA_NIM_EXPLORE_URL}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="mt-3 inline-flex items-center gap-2 rounded-lg bg-[#76b900] px-4 py-2 text-xs font-bold text-white transition-colors hover:bg-[#5a8f00]"
+                              >
+                                NVIDIA Build (models) <ExternalLink className="h-3.5 w-3.5" />
+                              </a>
+                            </div>
+                          </div>
+                          <div>
+                            <label htmlFor="nvidia-key-input" className="mb-2 block text-sm font-bold text-on-surface-variant">NVIDIA NIM API Key</label>
+                            <div className="relative">
+                              <input
+                                id="nvidia-key-input"
+                                type={showNvidiaKey ? 'text' : 'password'}
+                                value={nvidiaKey}
+                                onChange={(e) => setNvidiaKey(e.target.value)}
+                                placeholder="nvapi-..."
+                                className="w-full rounded-xl border border-surface-container-high bg-surface-container-low px-4 py-3 pr-12 font-mono text-sm transition-all focus:outline-none focus:ring-2 focus:ring-[#76b900]"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setShowNvidiaKey(!showNvidiaKey)}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 text-on-surface-variant transition-colors hover:text-on-surface"
+                              >
+                                {showNvidiaKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                              </button>
+                            </div>
+                          </div>
+                          <div>
+                            <label htmlFor="nvidia-model-input" className="mb-2 block text-sm font-bold text-on-surface-variant">Model ID</label>
+                            <input
+                              id="nvidia-model-input"
+                              type="text"
+                              value={nvidiaModel}
+                              onChange={(e) => setNvidiaModel(e.target.value)}
+                              placeholder="google/gemma-2-27b-it"
+                              className="w-full rounded-xl border border-surface-container-high bg-surface-container-low px-4 py-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[#76b900]"
+                            />
+                          </div>
+                          {!groqKey && !openaiKey && (
+                            <p className="text-xs font-bold text-error">Cần thêm Groq hoặc OpenAI API Key để Whisper (STT) khi chọn NIM đơn lẻ.</p>
+                          )}
+                        </div>
                       )}
 
                       {/* OpenAI: link + manual key input */}
                       {aiProvider === 'openai' && (
                         <div className="space-y-4">
+                          <AdminProviderEnableSwitch providerId="openai" />
                           <div className="bg-[#10a37f]/5 border border-[#10a37f]/20 rounded-xl p-5 flex items-start gap-4">
                             <div className="w-10 h-10 rounded-full bg-[#10a37f]/10 flex items-center justify-center shrink-0">
                               <ExternalLink className="w-5 h-5 text-[#10a37f]" />
@@ -2113,6 +2504,7 @@ const AdminDashboard = () => {
                       {/* Groq: link + manual key input */}
                       {aiProvider === 'groq' && (
                         <div className="space-y-4">
+                          <AdminProviderEnableSwitch providerId="groq" />
                           <div className="bg-[#f55036]/5 border border-[#f55036]/20 rounded-xl p-5 flex items-start gap-4">
                             <div className="w-10 h-10 rounded-full bg-[#f55036]/10 flex items-center justify-center shrink-0">
                               <ExternalLink className="w-5 h-5 text-[#f55036]" />
@@ -2160,6 +2552,7 @@ const AdminDashboard = () => {
                       {/* Claude: link + manual key input */}
                       {aiProvider === 'claude' && (
                         <div className="space-y-4">
+                          <AdminProviderEnableSwitch providerId="claude" />
                           <div className="bg-[#d97706]/5 border border-[#d97706]/20 rounded-xl p-5 flex items-start gap-4">
                             <div className="w-10 h-10 rounded-full bg-[#d97706]/10 flex items-center justify-center shrink-0">
                               <ExternalLink className="w-5 h-5 text-[#d97706]" />
@@ -2215,21 +2608,65 @@ const AdminDashboard = () => {
                       <p className="text-xs text-on-surface-variant font-bold uppercase tracking-wider">API Keys (them key de mo khoa cac provider)</p>
 
                       {/* Gemini */}
-                      <div className="bg-primary/5 border border-primary/15 rounded-xl p-4 flex items-center gap-3">
-                        <div className={cn("w-8 h-8 rounded-full flex items-center justify-center shrink-0", process.env.GEMINI_API_KEY ? "bg-green-100" : "bg-error/10")}>
-                          <ShieldCheck className={cn("w-4 h-4", process.env.GEMINI_API_KEY ? "text-green-600" : "text-error")} />
+                      {(() => {
+                        const geminiSt = providerAdminStatus('gemini');
+                        return (
+                      <div className="rounded-xl border border-primary/15 bg-primary/5 p-4">
+                        <AdminProviderEnableSwitch providerId="gemini" />
+                        <div className="flex items-center gap-3">
+                          <div className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-full", process.env.GEMINI_API_KEY ? "bg-green-100" : "bg-error/10")}>
+                            <ShieldCheck className={cn("h-4 w-4", process.env.GEMINI_API_KEY ? "text-green-600" : "text-error")} />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-bold text-on-surface">Gemini</p>
+                            <p className="text-[10px] text-on-surface-variant">Key tu bien moi truong (env)</p>
+                          </div>
+                          <span
+                            className={cn(
+                              'shrink-0 rounded px-2 py-0.5 text-[10px] font-bold uppercase',
+                              geminiSt.kind === 'ready' && 'bg-green-100 text-green-700',
+                              geminiSt.kind === 'paused' && 'bg-amber-100 text-amber-900',
+                              geminiSt.kind === 'missing' && 'bg-error/10 text-error',
+                            )}
+                          >
+                            {geminiSt.kind === 'ready' ? 'Sẵn sàng' : geminiSt.kind === 'paused' ? 'Tạm tắt' : 'Thiếu key'}
+                          </span>
                         </div>
-                        <div className="flex-1">
-                          <p className="text-sm font-bold text-on-surface">Gemini</p>
-                          <p className="text-[10px] text-on-surface-variant">Key tu bien moi truong (env)</p>
+                      </div>
+                        );
+                      })()}
+
+                      {/* NVIDIA NIM */}
+                      <div className="rounded-xl border border-[#76b900]/20 bg-[#76b900]/5 p-4">
+                        <AdminProviderEnableSwitch providerId="nvidiaNim" />
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className="text-sm font-bold text-on-surface">NVIDIA NIM</span>
+                          <a href={NVIDIA_NIM_EXPLORE_URL} target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold text-[#5a8f00] hover:underline">Build</a>
                         </div>
-                        <span className={cn("text-[10px] px-2 py-0.5 rounded font-bold uppercase", process.env.GEMINI_API_KEY ? "bg-green-100 text-green-700" : "bg-error/10 text-error")}>
-                          {process.env.GEMINI_API_KEY ? 'OK' : 'Missing'}
-                        </span>
+                        <div className="relative mb-2">
+                          <input
+                            type={showNvidiaKey ? 'text' : 'password'}
+                            value={nvidiaKey}
+                            onChange={(e) => setNvidiaKey(e.target.value)}
+                            placeholder="nvapi-..."
+                            className="w-full rounded-lg border border-surface-container-high bg-surface-container-low px-3 py-2 pr-10 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-[#76b900]"
+                          />
+                          <button type="button" onClick={() => setShowNvidiaKey(!showNvidiaKey)} className="absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface">
+                            {showNvidiaKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                          </button>
+                        </div>
+                        <input
+                          type="text"
+                          value={nvidiaModel}
+                          onChange={(e) => setNvidiaModel(e.target.value)}
+                          placeholder="google/gemma-2-27b-it"
+                          className="w-full rounded-lg border border-surface-container-high bg-surface-container-low px-3 py-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-[#76b900]"
+                        />
                       </div>
 
                       {/* Groq */}
                       <div className="bg-[#f55036]/5 border border-[#f55036]/15 rounded-xl p-4">
+                        <AdminProviderEnableSwitch providerId="groq" />
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-sm font-bold text-on-surface">Groq</span>
                           <span className="text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold uppercase">Free</span>
@@ -2250,6 +2687,7 @@ const AdminDashboard = () => {
 
                       {/* OpenAI */}
                       <div className="bg-[#10a37f]/5 border border-[#10a37f]/15 rounded-xl p-4">
+                        <AdminProviderEnableSwitch providerId="openai" />
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-sm font-bold text-on-surface">OpenAI</span>
                           <span className="text-[10px] bg-[#10a37f]/10 text-[#10a37f] px-2 py-0.5 rounded font-bold uppercase">Paid</span>
@@ -2270,6 +2708,7 @@ const AdminDashboard = () => {
 
                       {/* Claude */}
                       <div className="bg-[#d97706]/5 border border-[#d97706]/15 rounded-xl p-4">
+                        <AdminProviderEnableSwitch providerId="claude" />
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-sm font-bold text-on-surface">Claude</span>
                           <span className="text-[10px] bg-[#d97706]/10 text-[#d97706] px-2 py-0.5 rounded font-bold uppercase">Paid</span>
@@ -2294,7 +2733,7 @@ const AdminDashboard = () => {
                   <div className="flex items-center gap-4 mt-6 pt-6 border-t border-outline-variant/10">
                     <button
                       onClick={() => {
-                        saveAIConfig({ provider: aiProvider, enableMultiModel, openaiApiKey: openaiKey, groqApiKey: groqKey, claudeApiKey: claudeKey });
+                        saveAIConfig(adminAiConfigPayload);
                         setApiSaveStatus('saved');
                         setTimeout(() => setApiSaveStatus('idle'), 3000);
                       }}
