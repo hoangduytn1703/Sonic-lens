@@ -30,5 +30,16 @@ export default defineConfig(({mode}) => {
         },
       },
     },
+    // Same proxy for `vite preview` so production build can be tested locally without CORS.
+    preview: {
+      proxy: {
+        '/nvidia-nim-api': {
+          target: 'https://integrate.api.nvidia.com',
+          changeOrigin: true,
+          secure: true,
+          rewrite: (path) => path.replace(/^\/nvidia-nim-api/, ''),
+        },
+      },
+    },
   };
 });

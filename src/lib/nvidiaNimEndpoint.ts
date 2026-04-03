@@ -1,17 +1,17 @@
 /**
- * NVIDIA NIM "integrate" API is usually not callable from a browser origin
- * because of CORS. Mitigations:
- * - Local dev: Vite proxies /nvidia-nim-api -> https://integrate.api.nvidia.com
- * - Production: set VITE_NVIDIA_NIM_CHAT_URL to a same-origin path that your
- *   server or edge function proxies to integrate.api.nvidia.com, or call NIM from a backend.
+ * NVIDIA NIM "integrate" API is not callable from a random browser origin (CORS).
+ * Always use a same-origin path unless VITE_NVIDIA_NIM_CHAT_URL overrides it:
+ * - vite dev: Vite proxies /nvidia-nim-api -> https://integrate.api.nvidia.com (see vite.config.ts)
+ * - vite preview: same proxy under preview.proxy
+ * - production: use `npm run serve:prod` (Express + proxy) or configure nginx/Caddy/Vercel
+ *   to forward /nvidia-nim-api to https://integrate.api.nvidia.com
+ *
+ * Never default to https://integrate.api.nvidia.com in the client — that fails after deploy.
  */
 export function getNvidiaNimChatCompletionsUrl(): string {
   const explicit = import.meta.env.VITE_NVIDIA_NIM_CHAT_URL as string | undefined;
   if (explicit?.trim()) {
     return explicit.trim();
   }
-  if (import.meta.env.DEV) {
-    return '/nvidia-nim-api/v1/chat/completions';
-  }
-  return 'https://integrate.api.nvidia.com/v1/chat/completions';
+  return '/nvidia-nim-api/v1/chat/completions';
 }
