@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, createContext, useContext } from 'react';
+import { createBrowserRouter, RouterProvider, Link, useNavigate, useLocation, Navigate, Outlet, useBlocker } from 'react-router-dom';
 import { Mic, Settings, User, Play, Square, Pause, Trash2, Star, ChevronRight, ChevronLeft, ChevronUp, LogOut, LayoutDashboard, ShieldCheck, Download, Share2, Search, MoreVertical, Upload, Edit3, FileText, Save, RotateCcw, Key, ExternalLink, Eye, EyeOff, CheckCircle2, AlertCircle, Lock, Info, Loader2, GripVertical, Sparkles, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -10,10 +10,58 @@ import { isSupabaseConfigured, supabase } from './lib/supabase';
 import { transcribeAudio } from './services/transcribe';
 import { resetProviderBlacklist } from './services/transcribe';
 import { Recording, TranscriptItem } from './types';
-import { getAIConfig, saveAIConfig, isProviderEnabled, providerHasCredentials, getProviderPriority, type AIProvider, OPENAI_API_KEYS_URL, GEMINI_API_KEYS_URL, GROQ_API_KEYS_URL, CLAUDE_API_KEYS_URL, NVIDIA_NIM_EXPLORE_URL } from './lib/aiConfig';
+import {
+  getAIConfig,
+  saveAIConfigAndWaitRemote,
+  syncAIConfigFromSupabase,
+  AI_CONFIG_SYNC_EVENT,
+  isProviderEnabled,
+  providerHasCredentials,
+  getProviderPriority,
+  type AIProvider,
+  OPENAI_API_KEYS_URL,
+  GEMINI_API_KEYS_URL,
+  GROQ_API_KEYS_URL,
+  CLAUDE_API_KEYS_URL,
+  NVIDIA_NIM_EXPLORE_URL,
+} from './lib/aiConfig';
 import { GoTopButton } from './components/GoTopButton';
 import { AiSummaryBlock } from './components/AiSummaryBlock';
 import { generateFinalSummary } from './lib/generateSummary';
+import { RecordingSessionProvider, useRecordingDraft } from './contexts/RecordingSessionContext';
+
+/** Temporarily hide live post-render extras (AI summary preview, Export Word). Logic unchanged. */
+const SHOW_LIVE_POST_RENDER_EXTRAS = false;
+
+/** Persist "completion success toast already shown" across Dashboard remounts (e.g. tab switch). */
+const RENDER_COMPLETION_TOAST_ACK_KEY = 'sonic_lens_render_completion_toast_ack_v1';
+
+function hasRenderCompletionSuccessAck(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.sessionStorage.getItem(RENDER_COMPLETION_TOAST_ACK_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setRenderCompletionSuccessAck() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(RENDER_COMPLETION_TOAST_ACK_KEY, '1');
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearRenderCompletionSuccessAck() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.removeItem(RENDER_COMPLETION_TOAST_ACK_KEY);
+  } catch {
+    /* ignore */
+  }
+}
 
 const PROVIDER_ORDER_LABELS: Record<AIProvider, string> = {
   gemini: 'Gemini',
@@ -234,7 +282,7 @@ const Navbar = () => {
               Dashboard
             </Link>
             <Link
-              to="/admin"
+              to="/admin/recordings"
               className={cn(
                 "cursor-pointer font-headline tracking-tight transition-colors duration-200",
                 isAdmin ? "text-primary font-bold border-b-2 border-primary" : "text-on-surface-variant font-medium hover:text-primary"
@@ -291,24 +339,48 @@ function parseFriendlyError(raw: string): string {
 }
 
 const Dashboard = () => {
+  const navigate = useNavigate();
+  const { getDraft, patchDraft, clearDraft } = useRecordingDraft();
+
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const [duration, setDuration] = useState(0);
+  const [duration, setDuration] = useState(() => getDraft()?.duration ?? 0);
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const [processingCount, setProcessingCount] = useState(0);
   const [isFinalizing, setIsFinalizing] = useState(false);
   const isProcessing = processingCount > 0 || isFinalizing;
-  const [currentTranscript, setCurrentTranscript] = useState<string>("");
-  const [transcriptError, setTranscriptError] = useState<string | null>(null);
-  const [fullTranscript, setFullTranscript] = useState<TranscriptItem[]>([]);
-  const [lastAudioUrl, setLastAudioUrl] = useState<string | null>(null);
-  const [finalAudioBlob, setFinalAudioBlob] = useState<Blob | null>(null);
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
+
+  const [currentTranscript, setCurrentTranscript] = useState(() => {
+    const d = getDraft();
+    let ct = d?.currentTranscript ?? '';
+    if (d?.recordingSource === 'upload' && (d?.fullTranscript?.length ?? 0) > 0) {
+      const stale =
+        /Dang (tai|xu ly)/i.test(ct) ||
+        ct.includes('phan tich noi dung') ||
+        /^File dai\b/i.test(ct) ||
+        /^Dang xu ly doan\b/i.test(ct);
+      if (stale) ct = '';
+    }
+    return ct;
+  });
+  const [transcriptError, setTranscriptError] = useState<string | null>(() => getDraft()?.transcriptError ?? null);
+  const [fullTranscript, setFullTranscript] = useState<TranscriptItem[]>(() => getDraft()?.fullTranscript ?? []);
+  const [lastAudioUrl, setLastAudioUrl] = useState<string | null>(() => {
+    const b = getDraft()?.finalAudioBlob;
+    if (b) return URL.createObjectURL(b);
+    return null;
+  });
+  const [finalAudioBlob, setFinalAudioBlob] = useState<Blob | null>(() => getDraft()?.finalAudioBlob ?? null);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>(() => {
+    const s = getDraft()?.saveStatus;
+    if (s === 'success') return 'idle';
+    return s ?? 'idle';
+  });
   const [isNamingModalOpen, setIsNamingModalOpen] = useState(false);
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
-  const [recordingSource, setRecordingSource] = useState<'live' | 'upload'>('live');
+  const [recordingSource, setRecordingSource] = useState<'live' | 'upload'>(() => getDraft()?.recordingSource ?? 'live');
   const [namingError, setNamingError] = useState("");
-  const [newRecordingTitle, setNewRecordingTitle] = useState("");
+  const [newRecordingTitle, setNewRecordingTitle] = useState(() => getDraft()?.newRecordingTitle ?? '');
   const [renderToast, setRenderToast] = useState<{ variant: 'success' | 'error' | 'info'; message: string } | null>(null);
   const renderCompletionToastShownRef = useRef(false);
   const transcriptPanelRef = useRef<HTMLElement | null>(null);
@@ -323,8 +395,8 @@ const Dashboard = () => {
   fullTranscriptLengthRef.current = fullTranscript.length;
   const allBlobsRef = useRef<Blob[]>([]);
   const isWaitingForFinalBlobRef = useRef(false);
-  const [sessionSummary, setSessionSummary] = useState('');
-  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
+  const [sessionSummary, setSessionSummary] = useState(() => getDraft()?.sessionSummary ?? '');
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(() => getDraft()?.isGeneratingSummary ?? false);
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const autoChunkTimerRef = useRef<any>(null);
@@ -334,12 +406,164 @@ const Dashboard = () => {
 
   // UI-only model indicators: maps transcript index to provider name
   // These are NOT saved to DB or exported
-  const [modelIndicators, setModelIndicators] = useState<Map<number, string>>(new Map());
+  const [modelIndicators, setModelIndicators] = useState<Map<number, string>>(() => {
+    const e = getDraft()?.modelIndicators;
+    return e?.length ? new Map(e) : new Map();
+  });
+
+  const dashboardMountedRef = useRef(true);
+  useEffect(() => {
+    dashboardMountedRef.current = true;
+    return () => {
+      dashboardMountedRef.current = false;
+    };
+  }, []);
+
+  /** Optional post-transcript summary — persists to draft so returning from Admin keeps progress. */
+  const runSummaryGeneration = useCallback(
+    async (items: TranscriptItem[]) => {
+      patchDraft({ isGeneratingSummary: true });
+      setIsGeneratingSummary(true);
+      try {
+        const summary = await generateFinalSummary(items);
+        patchDraft({ sessionSummary: summary });
+        if (dashboardMountedRef.current) {
+          setSessionSummary(summary);
+        }
+      } catch (err) {
+        console.error('[runSummaryGeneration]', err);
+      } finally {
+        patchDraft({ isGeneratingSummary: false });
+        if (dashboardMountedRef.current) {
+          setIsGeneratingSummary(false);
+        }
+      }
+    },
+    [patchDraft],
+  );
+
+  /** STT + finalize + optional AI summary — UI busy indicator */
+  const aiPipelineBusy = processingCount > 0 || isFinalizing || isGeneratingSummary;
+
+  /** Transcribe / merge / live record only — do not block SPA during optional summary (review) step */
+  const sttPipelineBusy = processingCount > 0 || isFinalizing || isRecording;
+
+  const hasMeaningfulRecording =
+    lastAudioUrl != null ||
+    fullTranscript.length > 0 ||
+    finalAudioBlob != null ||
+    sessionSummary.trim().length > 0;
+
+  /**
+   * SPA navigation (e.g. Dashboard → Admin): block only while STT/recording not finished.
+   * After transcript render completes, navigation is allowed even if AI summary is still running.
+   */
+  const blockSpaNavigation = sttPipelineBusy;
+
+  /**
+   * Reload / close tab: warn while work is in progress, or when rendered data exists but is not persisted
+   * (refresh drops in-memory state; browser shows native dialog only).
+   */
+  const warnBeforeUnload = blockSpaNavigation || hasMeaningfulRecording;
+
+  const isDashboardPath = useCallback((p: string) => p === '/' || p === '/record', []);
+
+  const leaveWhileProcessingBlocker = useBlocker(
+    useCallback(
+      ({ currentLocation, nextLocation }) => {
+        if (!blockSpaNavigation) return false;
+        if (isDashboardPath(currentLocation.pathname) && isDashboardPath(nextLocation.pathname)) return false;
+        return currentLocation.pathname !== nextLocation.pathname;
+      },
+      [blockSpaNavigation, isDashboardPath],
+    ),
+  );
+
+  useEffect(() => {
+    if (!warnBeforeUnload) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [warnBeforeUnload]);
+
+  /** Clear stale import status lines once AI pipeline is idle (fixes stuck italic text after tab switch). */
+  useEffect(() => {
+    if (aiPipelineBusy) return;
+    setCurrentTranscript((prev) => {
+      if (recordingSource !== 'upload' || !prev.trim()) return prev;
+      const stale =
+        /Dang (tai|xu ly)/i.test(prev) ||
+        prev.includes('phan tich noi dung') ||
+        /^File dai\b/i.test(prev) ||
+        /^Dang xu ly doan\b/i.test(prev);
+      return stale ? '' : prev;
+    });
+  }, [aiPipelineBusy, recordingSource]);
 
   // Auto-chunk interval in milliseconds (2 minutes - keeps WAV under 15MB)
   const AUTO_CHUNK_INTERVAL = 2 * 60 * 1000;
   // Max chunk duration in seconds for file splitting
   const MAX_CHUNK_SECONDS = 2 * 60;
+
+  // Persist unsaved session when navigating away (e.g. Dashboard <-> Admin). Skips while recording.
+  useEffect(() => {
+    if (isRecording) return;
+    // Do not persist interim upload status lines — they break UI after remount when fullTranscript is already done.
+    const persistTranscript =
+      recordingSource === 'upload' && fullTranscript.length > 0 ? '' : currentTranscript;
+    patchDraft({
+      fullTranscript,
+      sessionSummary,
+      newRecordingTitle,
+      recordingSource,
+      modelIndicators: Array.from(modelIndicators.entries()),
+      finalAudioBlob,
+      transcriptError,
+      currentTranscript: persistTranscript,
+      duration,
+      saveStatus,
+      isGeneratingSummary,
+    });
+  }, [
+    isRecording,
+    fullTranscript,
+    sessionSummary,
+    newRecordingTitle,
+    recordingSource,
+    modelIndicators,
+    finalAudioBlob,
+    transcriptError,
+    currentTranscript,
+    duration,
+    saveStatus,
+    isGeneratingSummary,
+    patchDraft,
+  ]);
+
+  // If user left the tab during import, draft could still hold a loading line while fullTranscript is complete — clear it.
+  useLayoutEffect(() => {
+    if (recordingSource !== 'upload' || fullTranscript.length === 0) return;
+    if (isRecording || isProcessing || isFinalizing || isGeneratingSummary) return;
+    setCurrentTranscript((prev) => {
+      if (!prev.trim()) return prev;
+      const looksLikeImportStatus =
+        /Dang (tai|xu ly)/i.test(prev) ||
+        prev.includes('phan tich noi dung') ||
+        /^File dai\b/i.test(prev) ||
+        /^Dang xu ly doan\b/i.test(prev);
+      return looksLikeImportStatus ? '' : prev;
+    });
+  }, [
+    recordingSource,
+    fullTranscript.length,
+    isRecording,
+    isProcessing,
+    isFinalizing,
+    isGeneratingSummary,
+  ]);
 
   useEffect(() => {
     if (!renderToast) return;
@@ -351,16 +575,6 @@ const Dashboard = () => {
   useEffect(() => {
     if (isRecording || isFinalizing || isProcessing || !lastAudioUrl) return;
     if (renderCompletionToastShownRef.current) return;
-    renderCompletionToastShownRef.current = true;
-    if (transcriptError) {
-      setRenderToast({ variant: 'error', message: transcriptError });
-    } else {
-      setRenderToast({
-        variant: 'success',
-        message:
-          'Đã xử lý xong, vui lòng review trước khi thao tác (lưu, xuất file, hủy bỏ)',
-      });
-    }
 
     const scrollToResults = () => {
       const uploadWithTranscript =
@@ -371,13 +585,38 @@ const Dashboard = () => {
         : transcriptPanelRef.current;
       el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     };
+
+    if (transcriptError) {
+      renderCompletionToastShownRef.current = true;
+      setRenderToast({ variant: 'error', message: transcriptError });
+      window.setTimeout(scrollToResults, 200);
+      return;
+    }
+
+    // Success toast: only once per completed session (survives remount when switching routes)
+    if (hasRenderCompletionSuccessAck()) {
+      renderCompletionToastShownRef.current = true;
+      return;
+    }
+
+    renderCompletionToastShownRef.current = true;
+    setRenderCompletionSuccessAck();
+    setRenderToast({
+      variant: 'success',
+      message:
+        'Đã xử lý xong. Bạn có thể lưu, xuất Word hoặc hủy bất cứ lúc nào; tóm tắt AI chạy song song (không bắt buộc).',
+    });
     window.setTimeout(scrollToResults, 200);
   }, [isRecording, isFinalizing, isProcessing, lastAudioUrl, transcriptError]);
 
   const resetRecording = () => {
+    setLastAudioUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    clearDraft();
     setCurrentTranscript("");
     setFullTranscript([]);
-    setLastAudioUrl(null);
     setFinalAudioBlob(null);
     setDuration(0);
     setSaveStatus('idle');
@@ -385,10 +624,13 @@ const Dashboard = () => {
     setNamingError("");
     setRenderToast(null);
     renderCompletionToastShownRef.current = false;
+    clearRenderCompletionSuccessAck();
     allBlobsRef.current = [];
     setSessionSummary('');
     setIsGeneratingSummary(false);
     setIsResetModalOpen(false);
+    setModelIndicators(new Map());
+    setTranscriptError(null);
   };
 
   const saveToSupabase = async (customTitle?: string) => {
@@ -449,7 +691,8 @@ const Dashboard = () => {
         summary: sessionSummary,
         duration: duration,
         is_important: false,
-        source: recordingSource
+        source: recordingSource,
+        summary_incomplete_at_save: isGeneratingSummary,
       });
 
       if (dbError) {
@@ -458,16 +701,15 @@ const Dashboard = () => {
       }
 
       console.log("Đã lưu vào Supabase thành công!");
-      setSaveStatus('success');
       setNamingError("");
       setIsNamingModalOpen(false);
+      clearDraft();
+      resetRecording();
       setRenderToast({
         variant: 'info',
         message:
           'Đã lưu thành công. Bạn có thể vào Admin > Bản ghi âm để xem lại transcript và tóm tắt AI.',
       });
-      // Reset status after a while
-      setTimeout(() => setSaveStatus('idle'), 5000);
     } catch (storageErr: any) {
       console.error("Lỗi Supabase khi lưu bản ghi:", storageErr);
       setSaveStatus('error');
@@ -523,6 +765,12 @@ const Dashboard = () => {
 
   const startRecording = async () => {
     try {
+      setLastAudioUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+      clearDraft();
+      clearRenderCompletionSuccessAck();
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       const recorder = new MediaRecorder(stream);
@@ -539,6 +787,7 @@ const Dashboard = () => {
       setTranscriptError(null);
       setSaveStatus('idle');
       renderCompletionToastShownRef.current = false;
+      clearRenderCompletionSuccessAck();
 
       setupRecorder(recorder);
 
@@ -636,16 +885,7 @@ const Dashboard = () => {
 
           // Generate summary from complete transcript (use ref to get latest value)
           console.log('[finalizeRecording] Generating final summary...');
-          setIsGeneratingSummary(true);
-          try {
-            const summary = await generateFinalSummary(fullTranscriptRef.current);
-            setSessionSummary(summary);
-            if (summary) {
-              console.log('[finalizeRecording] Summary generated successfully');
-            }
-          } finally {
-            setIsGeneratingSummary(false);
-          }
+          await runSummaryGeneration(fullTranscriptRef.current);
         }
       } catch (err) {
         console.error("Error finalizing recording:", err);
@@ -810,6 +1050,12 @@ const Dashboard = () => {
     setSaveStatus('idle');
     setTranscriptError(null);
     renderCompletionToastShownRef.current = false;
+    setLastAudioUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    clearDraft();
+    clearRenderCompletionSuccessAck();
     allBlobsRef.current = [file];
     setFinalAudioBlob(file);
     setRecordingSource('upload'); // It's an uploaded file
@@ -916,16 +1162,7 @@ const Dashboard = () => {
           setTranscriptError('Khong tao duoc transcript tu file. Vui long kiem tra file hoac cau hinh API.');
         } else {
           console.log('[Chunked Import] Generating final summary...');
-          setIsGeneratingSummary(true);
-          try {
-            const summary = await generateFinalSummary(allTranscripts);
-            setSessionSummary(summary);
-            if (summary) {
-              console.log('[Chunked Import] Summary generated successfully');
-            }
-          } finally {
-            setIsGeneratingSummary(false);
-          }
+          await runSummaryGeneration(allTranscripts);
         }
         setIsFinalizing(false);
         setCurrentTranscript("");
@@ -946,16 +1183,7 @@ const Dashboard = () => {
 
         setFullTranscript(result.transcript);
         console.log('[Direct Import] Generating final summary...');
-        setIsGeneratingSummary(true);
-        try {
-          const summary = await generateFinalSummary(result.transcript);
-          setSessionSummary(summary);
-          if (summary) {
-            console.log('[Direct Import] Summary generated successfully');
-          }
-        } finally {
-          setIsGeneratingSummary(false);
-        }
+        await runSummaryGeneration(result.transcript);
         setIsFinalizing(false);
         setCurrentTranscript("");
 
@@ -1170,15 +1398,64 @@ const Dashboard = () => {
         )}
       </AnimatePresence>
 
+      {leaveWhileProcessingBlocker.state === 'blocked' && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.96 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-md rounded-2xl border border-outline-variant/20 bg-surface p-6 shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="leave-confirm-title"
+          >
+            <h3 id="leave-confirm-title" className="font-headline text-lg font-bold text-on-surface">
+              {processingCount > 0 || isFinalizing ? 'Đang xử lý bằng AI' : 'Đang ghi âm'}
+            </h3>
+            <p className="mt-3 text-sm leading-relaxed text-on-surface-variant">
+              {processingCount > 0 || isFinalizing
+                ? 'Hệ thống vẫn đang chuyển giọng nói. Nếu bạn rời đi ngay, tiến trình có thể bị gián đoạn và không lưu kết quả.'
+                : 'Bản ghi đang diễn ra. Nếu bạn rời đi ngay, phần đang ghi có thể bị mất.'}
+            </p>
+            <div className="mt-6 flex flex-wrap justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => leaveWhileProcessingBlocker.reset()}
+                className="rounded-xl border border-outline-variant/30 bg-surface-container-low px-5 py-2.5 text-sm font-bold text-on-surface transition-colors hover:bg-surface-container-high"
+              >
+                Không, ở lại
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  resetRecording();
+                  leaveWhileProcessingBlocker.proceed();
+                }}
+                className="rounded-xl bg-primary px-5 py-2.5 text-sm font-bold text-white shadow-md transition-opacity hover:opacity-95"
+              >
+                Có, rời đi
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
       <section className="flex w-full max-w-6xl flex-col items-center gap-8">
         <div className="relative group flex w-full flex-col items-center gap-6">
-          <div className="flex items-center gap-4">
+          <div
+            className={cn(
+              'flex items-center gap-4',
+              !SHOW_LIVE_POST_RENDER_EXTRAS && !isRecording && 'justify-center',
+            )}
+          >
+            {/* Live mic: hidden while direct recording is disabled (keep in tree; show again when recording for stop). */}
+            {(SHOW_LIVE_POST_RENDER_EXTRAS || isRecording) && (
             <div className="relative">
               <div className={cn(
                 "absolute inset-0 bg-primary opacity-20 blur-3xl rounded-full transition-opacity",
                 isRecording && !isPaused ? "opacity-40 animate-pulse" : "group-hover:opacity-30"
               )}></div>
               <button
+                type="button"
                 onClick={isRecording ? stopRecording : startRecording}
                 disabled={isProcessing}
                 className={cn(
@@ -1189,6 +1466,7 @@ const Dashboard = () => {
                 {isRecording ? <Square className="w-8 h-8 fill-current" /> : <Mic className="w-10 h-10 fill-current" />}
               </button>
             </div>
+            )}
 
             {isRecording && (
               <button
@@ -1234,7 +1512,13 @@ const Dashboard = () => {
                   aria-hidden
                   className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-primary via-secondary to-primary opacity-80"
                 />
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div
+                  className={cn(
+                    'flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between',
+                    recordingSource === 'live' && !SHOW_LIVE_POST_RENDER_EXTRAS && 'hidden',
+                  )}
+                  aria-hidden={recordingSource === 'live' && !SHOW_LIVE_POST_RENDER_EXTRAS}
+                >
                   <div className="flex items-center gap-3">
                     <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/15 shadow-inner ring-2 ring-primary/10">
                       <Mic className="h-6 w-6 text-primary" />
@@ -1268,7 +1552,7 @@ const Dashboard = () => {
                         </button>
                       </>
                     )}
-                    {fullTranscript.length > 0 && (
+                    {fullTranscript.length > 0 && (SHOW_LIVE_POST_RENDER_EXTRAS || recordingSource !== 'live') && (
                       <button
                         type="button"
                         onClick={() => exportToWord(newRecordingTitle || "Recording", fullTranscript)}
@@ -1282,7 +1566,36 @@ const Dashboard = () => {
                   </div>
                 </div>
 
-                {recordingSource === 'upload' ? (
+                {recordingSource === 'live' && !SHOW_LIVE_POST_RENDER_EXTRAS ? (
+                  <div className="flex flex-col gap-6">
+                    <div className="flex min-h-[180px] flex-col items-center justify-center gap-3 px-4 py-8 text-center">
+                      <Loader2 className="h-12 w-12 shrink-0 animate-spin text-primary" aria-hidden />
+                      <p className="max-w-md text-xs leading-relaxed text-on-surface-variant">
+                        Tính năng sau khi ghi trực tiếp đang được cập nhật. Transcript và tóm tắt vẫn hiển thị ở khu vực bên dưới.
+                      </p>
+                    </div>
+                    {saveStatus !== 'success' && (
+                      <div className="flex flex-wrap items-center justify-center gap-3 border-t border-outline-variant/15 pt-4">
+                        <button
+                          type="button"
+                          onClick={() => setIsNamingModalOpen(true)}
+                          disabled={isProcessing}
+                          className="rounded-xl bg-gradient-to-r from-primary via-primary to-secondary px-5 py-2.5 text-sm font-bold text-white shadow-md transition-all hover:opacity-95 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Lưu bản ghi
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsResetModalOpen(true)}
+                          disabled={isProcessing}
+                          className="rounded-xl bg-surface-container-high px-4 py-2.5 text-xs font-bold text-error transition-all hover:bg-error/10 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Hủy
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : recordingSource === 'upload' ? (
                   <SyncedTranscriptPlayer
                     audioSrc={lastAudioUrl}
                     transcript={fullTranscript}
@@ -1295,7 +1608,10 @@ const Dashboard = () => {
                 )}
               </div>
 
-              {(isGeneratingSummary || sessionSummary.trim()) && fullTranscript.length > 0 && !transcriptError ? (
+              {(SHOW_LIVE_POST_RENDER_EXTRAS || recordingSource !== 'live') &&
+              (isGeneratingSummary || sessionSummary.trim()) &&
+              fullTranscript.length > 0 &&
+              !transcriptError ? (
                 <aside className="flex w-full flex-col overflow-hidden rounded-xl border-2 border-primary/25 bg-gradient-to-b from-primary-fixed/20 to-surface-container-lowest/90 shadow-[0_12px_40px_-16px_rgba(79,70,229,0.35)] ring-1 ring-primary/10 xl:max-h-[calc(100vh-8rem)] xl:min-h-0 xl:w-[min(100%,22rem)] xl:shrink-0 xl:sticky xl:top-28 xl:self-start">
                   <h4 className="shrink-0 border-b border-primary/25 bg-surface px-4 py-3 font-headline text-xs font-bold uppercase tracking-wider text-primary">
                     Tóm tắt AI (xem trước)
@@ -1327,10 +1643,18 @@ const Dashboard = () => {
         </div>
         <div className="text-center space-y-2">
           <h1 className="text-4xl font-black font-headline tracking-tighter text-on-surface">
-            {isRecording ? "Đang ghi âm..." : "Sẵn sàng ghi âm?"}
+            {isRecording
+              ? "Đang ghi âm..."
+              : SHOW_LIVE_POST_RENDER_EXTRAS
+                ? "Sẵn sàng ghi âm?"
+                : "Nhập file âm thanh"}
           </h1>
           <p className="text-on-surface-variant font-medium">
-            {isRecording ? "Đang lắng nghe và phân tích giọng nói của bạn." : "Nhấn vào microphone để bắt đầu chuyển đổi cuộc họp thành văn bản."}
+            {isRecording
+              ? "Đang lắng nghe và phân tích giọng nói của bạn."
+              : SHOW_LIVE_POST_RENDER_EXTRAS
+                ? "Nhấn vào microphone để bắt đầu chuyển đổi cuộc họp thành văn bản."
+                : "Ghi trực tiếp tạm tắt. Chọn file âm thanh hoặc video để AI chuyển thành văn bản."}
           </p>
         </div>
 
@@ -1340,9 +1664,9 @@ const Dashboard = () => {
               key={i}
               className={cn(
                 "w-1.5 rounded-full transition-all duration-300",
-                (isRecording || isProcessing || isGeneratingSummary) ? "bg-primary waveform-bar" : "bg-surface-container-highest h-2"
+                (isRecording || sttPipelineBusy) ? "bg-primary waveform-bar" : "bg-surface-container-highest h-2"
               )}
-              style={{ animationDelay: `${i * 0.1}s`, height: (isRecording || isProcessing || isGeneratingSummary) ? undefined : `${[2, 4, 3, 6, 4, 2, 5, 3][i] * 4}px` }}
+              style={{ animationDelay: `${i * 0.1}s`, height: (isRecording || sttPipelineBusy) ? undefined : `${[2, 4, 3, 6, 4, 2, 5, 3][i] * 4}px` }}
             ></div>
           ))}
         </div>
@@ -1352,13 +1676,22 @@ const Dashboard = () => {
         <div className="min-h-[600px] rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-10 shadow-[0_20px_40px_-10px_rgba(19,27,46,0.04)]">
           <div className="mb-8 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <span className={cn("w-2 h-2 rounded-full", isRecording ? "bg-error animate-pulse" : "bg-tertiary")}></span>
+              <span
+                className={cn(
+                  'w-2 h-2 rounded-full',
+                  isRecording ? 'bg-error animate-pulse' : sttPipelineBusy ? 'bg-primary animate-pulse' : 'bg-tertiary',
+                )}
+              ></span>
               <span className="text-xs font-bold uppercase tracking-widest text-on-surface-variant font-headline">
-                {isProcessing ? "AI Đang xử lý" : isRecording ? "Đang ghi âm trực tiếp" : "Bản ghi mới nhất"}
+                {sttPipelineBusy ? 'AI đang xử lý' : isRecording ? 'Đang ghi âm trực tiếp' : 'Bản ghi mới nhất'}
               </span>
             </div>
             <div className="flex gap-2">
-              <span className="bg-secondary-fixed text-on-secondary-fixed text-[10px] px-2 py-0.5 rounded-md font-bold uppercase tracking-tighter">AI Analysis Active</span>
+              {sttPipelineBusy && (
+                <span className="rounded-md bg-secondary-fixed px-2 py-0.5 text-[10px] font-bold uppercase tracking-tighter text-on-secondary-fixed">
+                  Đang phân tích
+                </span>
+              )}
               {saveStatus !== 'idle' && (
                 <span className={cn(
                   "text-[10px] px-2 py-0.5 rounded-md font-bold uppercase tracking-tighter",
@@ -1373,7 +1706,9 @@ const Dashboard = () => {
           </div>
 
           <div className="space-y-6 leading-relaxed">
-            {recordingSource === 'live' && fullTranscript.length > 0 && !transcriptError ? (
+            {(recordingSource === 'live' || recordingSource === 'upload') &&
+            fullTranscript.length > 0 &&
+            !transcriptError ? (
               <div className="relative">
                 <div
                   ref={liveTranscriptScrollRef}
@@ -1465,14 +1800,15 @@ const Dashboard = () => {
                   </button>
                   <button
                     type="button"
-                    onClick={() => window.location.href = '/admin'}
+                    onClick={() => navigate('/admin/api')}
                     className="text-xs bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 rounded-lg px-3 py-1.5 font-medium transition-colors cursor-pointer"
                   >
                     Kiem tra API Key
                   </button>
                 </div>
               </motion.div>
-            ) : currentTranscript ? (
+            ) : currentTranscript &&
+              !(recordingSource === 'upload' && fullTranscript.length > 0) ? (
               <div className="text-xl font-body text-on-surface whitespace-pre-wrap italic opacity-70">
                 {currentTranscript}
               </div>
@@ -1643,10 +1979,13 @@ const AdminLogin = ({ onLogin }: { onLogin: (remember: boolean) => void }) => {
 };
 
 const AdminDashboard = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const activeTab: 'recordings' | 'api' = location.pathname.endsWith('/api') ? 'api' : 'recordings';
+
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [selectedRecording, setSelectedRecording] = useState<Recording | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'recordings' | 'api'>('recordings');
   const [isRenameModalOpen, setIsRenameModalOpen] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [editTitleValue, setEditTitleValue] = useState("");
@@ -1656,6 +1995,7 @@ const AdminDashboard = () => {
   const [renameError, setRenameError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [adminSummaryRegenerating, setAdminSummaryRegenerating] = useState(false);
   /** Admin recording detail: AI summary panel hidden by default on small screens */
   const [showRecordingSummary, setShowRecordingSummary] = useState(false);
   /** Collapsible left nav (1366px and similar) */
@@ -1677,9 +2017,30 @@ const AdminDashboard = () => {
   const [nvidiaModel, setNvidiaModel] = useState<string>(() => getAIConfig().nvidiaNimModel);
   const [showNvidiaKey, setShowNvidiaKey] = useState(false);
   const [apiSaveStatus, setApiSaveStatus] = useState<'idle' | 'saved'>('idle');
+  const [apiSaveError, setApiSaveError] = useState<string | null>(null);
   const [providerPriorityOrder, setProviderPriorityOrder] = useState<AIProvider[]>(() => getProviderPriority(getAIConfig()));
   const [disabledProviders, setDisabledProviders] = useState<AIProvider[]>(() => getAIConfig().disabledProviders ?? []);
   const dragPriorityFrom = useRef<number | null>(null);
+
+  const refreshAiFormFromStore = useCallback(() => {
+    const c = getAIConfig();
+    setAIProvider(c.provider);
+    setEnableMultiModel(c.enableMultiModel);
+    setOpenaiKey(c.openaiApiKey);
+    setGroqKey(c.groqApiKey);
+    setClaudeKey(c.claudeApiKey);
+    setNvidiaKey(c.nvidiaNimApiKey);
+    setNvidiaModel(c.nvidiaNimModel);
+    setProviderPriorityOrder(getProviderPriority(c));
+    setDisabledProviders(c.disabledProviders ?? []);
+  }, []);
+
+  useEffect(() => {
+    refreshAiFormFromStore();
+    const onSync = () => refreshAiFormFromStore();
+    window.addEventListener(AI_CONFIG_SYNC_EVENT, onSync);
+    return () => window.removeEventListener(AI_CONFIG_SYNC_EVENT, onSync);
+  }, [refreshAiFormFromStore]);
 
   const toggleProviderDisabled = (p: AIProvider) => {
     setDisabledProviders((prev) => (prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]));
@@ -1765,6 +2126,33 @@ const AdminDashboard = () => {
     if (error) console.error("Error fetching recordings:", error);
     else setRecordings(data || []);
     setLoading(false);
+  };
+
+  const regenerateSelectedRecordingSummary = async () => {
+    if (!selectedRecording || !isSupabaseConfigured) return;
+    setAdminSummaryRegenerating(true);
+    try {
+      const text = await generateFinalSummary(selectedRecording.transcript);
+      const { error } = await supabase
+        .from('recordings')
+        .update({ summary: text, summary_incomplete_at_save: false })
+        .eq('id', selectedRecording.id);
+      if (error) {
+        console.error(error);
+        alert('Không cập nhật được tóm tắt: ' + error.message);
+        return;
+      }
+      const next: Recording = {
+        ...selectedRecording,
+        summary: text,
+        summary_incomplete_at_save: false,
+      };
+      setSelectedRecording(next);
+      setRecordings((prev) => prev.map((r) => (r.id === next.id ? next : r)));
+      setShowRecordingSummary(true);
+    } finally {
+      setAdminSummaryRegenerating(false);
+    }
   };
 
   const toggleImportant = async (id: string, current: boolean) => {
@@ -1942,7 +2330,8 @@ const AdminDashboard = () => {
         </div>
         <nav className="flex flex-1 flex-col gap-1">
           <button
-            onClick={() => setActiveTab('recordings')}
+            type="button"
+            onClick={() => navigate('/admin/recordings')}
             className={cn(
               "flex items-center gap-2 rounded-lg px-2.5 py-2.5 text-left font-semibold shadow-sm transition-all duration-200",
               activeTab === 'recordings' ? "bg-white text-primary" : "text-on-surface-variant hover:bg-white/50"
@@ -1952,7 +2341,8 @@ const AdminDashboard = () => {
             <span className="font-body text-xs font-medium leading-snug">Bản ghi âm</span>
           </button>
           <button
-            onClick={() => setActiveTab('api')}
+            type="button"
+            onClick={() => navigate('/admin/api')}
             className={cn(
               "flex items-center gap-2 rounded-lg px-2.5 py-2.5 text-left font-semibold shadow-sm transition-all duration-200",
               activeTab === 'api' ? "bg-white text-primary" : "text-on-surface-variant hover:bg-white/50"
@@ -2146,7 +2536,7 @@ const AdminDashboard = () => {
                               </div>
                             </div>
                             <div className="flex flex-wrap items-center gap-1 sm:gap-2">
-                              {selectedRecording.summary?.trim() && !showRecordingSummary && (
+                              {(selectedRecording.summary?.trim() || selectedRecording.summary_incomplete_at_save) && !showRecordingSummary && (
                                 <button
                                   type="button"
                                   onClick={() => setShowRecordingSummary(true)}
@@ -2180,6 +2570,35 @@ const AdminDashboard = () => {
                               </button>
                             </div>
                           </div>
+
+                          {selectedRecording.summary_incomplete_at_save && (
+                            <div className="mb-6 rounded-xl border border-amber-200/80 bg-amber-50/90 px-4 py-3 text-sm text-amber-950 shadow-sm">
+                              <p className="font-semibold leading-snug">
+                                Tóm tắt AI chưa hoàn tất tại thời điểm bạn lưu bản ghi này.
+                              </p>
+                              <p className="mt-1 text-xs leading-relaxed text-amber-900/90">
+                                Bạn có muốn chạy phân tích tóm tắt ngay bây giờ? (Cần cấu hình API trong Cài đặt API.)
+                              </p>
+                              <button
+                                type="button"
+                                disabled={adminSummaryRegenerating}
+                                onClick={() => void regenerateSelectedRecordingSummary()}
+                                className="mt-3 inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-xs font-bold uppercase tracking-wide text-white shadow-sm transition-opacity hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {adminSummaryRegenerating ? (
+                                  <>
+                                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                                    Đang phân tích...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Sparkles className="h-4 w-4" aria-hidden />
+                                    Phân tích lại
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          )}
 
                           {selectedRecording.source === 'upload' ? (
                             <SyncedTranscriptPlayer
@@ -2222,7 +2641,7 @@ const AdminDashboard = () => {
                         </div>
                       </div>
 
-                      {selectedRecording.summary?.trim() && showRecordingSummary ? (
+                      {(selectedRecording.summary?.trim() || selectedRecording.summary_incomplete_at_save) && showRecordingSummary ? (
                         <aside className="flex w-full shrink-0 flex-col overflow-hidden rounded-xl border-2 border-primary/25 bg-gradient-to-b from-primary-fixed/20 to-surface-container-lowest/90 shadow-[0_12px_40px_-16px_rgba(79,70,229,0.35)] ring-1 ring-primary/10 xl:max-h-[calc(100vh-7rem)] xl:min-h-0 xl:w-[min(100%,17.5rem)] xl:sticky xl:top-24 xl:self-start">
                           <div className="flex shrink-0 items-center justify-between gap-2 border-b border-primary/25 bg-surface px-3 py-2.5 sm:px-4">
                             <h4 className="font-headline text-xs font-bold uppercase tracking-wider text-primary">
@@ -2239,7 +2658,13 @@ const AdminDashboard = () => {
                             </button>
                           </div>
                           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3 sm:px-4">
-                            <AiSummaryBlock text={selectedRecording.summary} />
+                            {selectedRecording.summary_incomplete_at_save && !selectedRecording.summary?.trim() ? (
+                              <p className="text-xs leading-relaxed text-on-surface-variant">
+                                Chưa có nội dung tóm tắt (AI chưa chạy xong khi lưu). Dùng nút &quot;Phân tích lại&quot; phía trên hoặc tại đây sau khi bổ sung API.
+                              </p>
+                            ) : (
+                              <AiSummaryBlock text={selectedRecording.summary} />
+                            )}
                           </div>
                         </aside>
                       ) : null}
@@ -2850,10 +3275,19 @@ const AdminDashboard = () => {
                   )}
 
                   {/* Save */}
-                  <div className="flex items-center gap-4 mt-6 pt-6 border-t border-outline-variant/10">
+                  <div className="flex flex-col gap-2 mt-6 pt-6 border-t border-outline-variant/10">
+                    <div className="flex flex-wrap items-center gap-4">
                     <button
-                      onClick={() => {
-                        saveAIConfig(adminAiConfigPayload);
+                      type="button"
+                      onClick={async () => {
+                        setApiSaveError(null);
+                        const r = await saveAIConfigAndWaitRemote(adminAiConfigPayload);
+                        if (!r.ok) {
+                          setApiSaveError(
+                            r.error ?? 'Không lưu được lên Supabase. Chạy SQL tạo bảng ai_app_config (xem supabase_ai_app_config.sql).',
+                          );
+                          return;
+                        }
                         setApiSaveStatus('saved');
                         setTimeout(() => setApiSaveStatus('idle'), 3000);
                       }}
@@ -2875,6 +3309,10 @@ const AdminDashboard = () => {
                         </motion.div>
                       )}
                     </AnimatePresence>
+                    </div>
+                    {apiSaveError && (
+                      <p className="text-xs font-medium text-error">{apiSaveError}</p>
+                    )}
                   </div>
                 </div>
 
@@ -3151,6 +3589,66 @@ const AppLoginPage = ({ onLogin }: { onLogin: (remember: boolean) => void }) => 
   );
 };
 
+/** Admin gate for data router (useBlocker requires createBrowserRouter). */
+const AdminAuthContext = createContext<{
+  isAdminAuthenticated: boolean;
+  onAdminLogin: (remember: boolean) => void;
+} | null>(null);
+
+function MainLayout() {
+  return (
+    <div className="flex min-h-screen flex-col bg-surface">
+      <Navbar />
+      <Outlet />
+      <footer className="mt-auto w-full border-t border-surface-container-low bg-surface py-12">
+        <div className="flex w-full flex-col items-center justify-center gap-4">
+          <p className="font-body text-xs text-on-surface-variant">
+            © 2026 Sonic Lens. Developement for{' '}
+            <a
+              href="https://nhduy1703.vercel.app/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-bold text-primary transition-opacity hover:opacity-80"
+            >
+              Nguyễn Hoàng Duy
+            </a>
+          </p>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+function AdminRouteWrapper() {
+  const ctx = useContext(AdminAuthContext);
+  if (!ctx) return null;
+  if (!ctx.isAdminAuthenticated) {
+    return <AdminLogin onLogin={ctx.onAdminLogin} />;
+  }
+  return <Outlet />;
+}
+
+const sonicLensRouter = createBrowserRouter([
+  {
+    path: '/',
+    element: <MainLayout />,
+    children: [
+      { index: true, element: <Dashboard /> },
+      { path: 'record', element: <Dashboard /> },
+      {
+        path: 'admin',
+        element: <AdminRouteWrapper />,
+        children: [
+          { index: true, element: <Navigate to="recordings" replace /> },
+          { path: 'recordings', element: <AdminDashboard /> },
+          { path: 'api', element: <AdminDashboard /> },
+        ],
+      },
+      { path: '*', element: <Navigate to="/" replace /> },
+    ],
+  },
+]);
+
 export default function App() {
   const [isAppAuthenticated, setIsAppAuthenticated] = useState(() => {
     return localStorage.getItem(APP_AUTH_KEY) === 'true';
@@ -3160,6 +3658,20 @@ export default function App() {
     return localStorage.getItem("isAdminAuthenticated") === "true";
   });
 
+  useEffect(() => {
+    if (!isAppAuthenticated) return;
+    let cancelled = false;
+    (async () => {
+      const applied = await syncAIConfigFromSupabase();
+      if (!cancelled && applied) {
+        window.dispatchEvent(new CustomEvent(AI_CONFIG_SYNC_EVENT));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAppAuthenticated]);
+
   const handleAppLogin = (remember: boolean) => {
     setIsAppAuthenticated(true);
     if (remember) {
@@ -3167,12 +3679,12 @@ export default function App() {
     }
   };
 
-  const handleAdminLogin = (remember: boolean) => {
+  const handleAdminLogin = useCallback((remember: boolean) => {
     setIsAdminAuthenticated(true);
     if (remember) {
       localStorage.setItem("isAdminAuthenticated", "true");
     }
-  };
+  }, []);
 
   // Show login gate if not authenticated
   if (!isAppAuthenticated) {
@@ -3180,31 +3692,15 @@ export default function App() {
   }
 
   return (
-    <Router>
-      <div className="min-h-screen flex flex-col bg-surface">
-        <Navbar />
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route
-            path="/admin"
-            element={
-              isAdminAuthenticated ? (
-                <AdminDashboard />
-              ) : (
-                <AdminLogin onLogin={handleAdminLogin} />
-              )
-            }
-          />
-        </Routes>
-
-        <footer className="bg-surface w-full py-12 mt-auto border-t border-surface-container-low">
-          <div className="flex flex-col items-center justify-center gap-4 w-full">
-            <p className="font-body text-xs text-on-surface-variant">
-              © 2026 Sonic Lens. Developement for <a href="https://nhduy1703.vercel.app/" target="_blank" rel="noopener noreferrer" className="font-bold text-primary hover:opacity-80 transition-opacity">Nguyễn Hoàng Duy</a>
-            </p>
-          </div>
-        </footer>
-      </div>
-    </Router>
+    <RecordingSessionProvider>
+      <AdminAuthContext.Provider
+        value={{
+          isAdminAuthenticated,
+          onAdminLogin: handleAdminLogin,
+        }}
+      >
+        <RouterProvider router={sonicLensRouter} />
+      </AdminAuthContext.Provider>
+    </RecordingSessionProvider>
   );
 }
