@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
-import { Mic, Settings, User, Play, Square, Pause, Trash2, Star, ChevronRight, LogOut, LayoutDashboard, ShieldCheck, Download, Share2, Search, MoreVertical, Upload, Edit3, FileText, Save, RotateCcw, Key, ExternalLink, Eye, EyeOff, CheckCircle2, AlertCircle, Lock, Info, Loader2, GripVertical } from 'lucide-react';
+import { Mic, Settings, User, Play, Square, Pause, Trash2, Star, ChevronRight, ChevronLeft, ChevronUp, LogOut, LayoutDashboard, ShieldCheck, Download, Share2, Search, MoreVertical, Upload, Edit3, FileText, Save, RotateCcw, Key, ExternalLink, Eye, EyeOff, CheckCircle2, AlertCircle, Lock, Info, Loader2, GripVertical, Sparkles, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
 import { Document, Packer, Paragraph, TextRun } from 'docx';
@@ -43,6 +43,8 @@ interface SyncedTranscriptPlayerProps {
 
 const SyncedTranscriptPlayer = ({ audioSrc, transcript, modelIndicators }: SyncedTranscriptPlayerProps) => {
   const audioRef = useRef<HTMLAudioElement>(null);
+  const transcriptScrollRef = useRef<HTMLDivElement>(null);
+  const [showTranscriptScrollTop, setShowTranscriptScrollTop] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [activeIdx, setActiveIdx] = useState<number>(-1);
   const activeItemRef = useRef<HTMLDivElement>(null);
@@ -106,9 +108,17 @@ const SyncedTranscriptPlayer = ({ audioSrc, transcript, modelIndicators }: Synce
         )}
       </div>
 
-      {/* Synced Transcript */}
+      {/* Synced Transcript — max height 1.5× previous (600px → 900px) */}
       {transcript.length > 0 && (
-        <div className="space-y-1.5 max-h-[600px] overflow-y-auto pr-2">
+        <div className="relative">
+          <div
+            ref={transcriptScrollRef}
+            onScroll={() => {
+              const el = transcriptScrollRef.current;
+              setShowTranscriptScrollTop(!!el && el.scrollTop > 100);
+            }}
+            className="max-h-[900px] space-y-1.5 overflow-y-auto pr-2"
+          >
           {transcript.map((item, idx) => {
             const isActive = idx === activeIdx;
             return (
@@ -142,9 +152,9 @@ const SyncedTranscriptPlayer = ({ audioSrc, transcript, modelIndicators }: Synce
                   )}
                 >
                   {/* Timestamp + play indicator */}
-                  <div className="w-14 shrink-0 pt-0.5">
+                  <div className="w-10 shrink-0 pt-0.5">
                     <span className={cn(
-                      "text-[10px] font-mono block text-center py-0.5 rounded-md transition-all",
+                      "block rounded-md py-0.5 text-center font-mono text-[9px] leading-tight transition-all",
                       isActive
                         ? "bg-primary text-white font-bold"
                         : "text-on-surface-variant opacity-40 group-hover:opacity-70"
@@ -187,6 +197,17 @@ const SyncedTranscriptPlayer = ({ audioSrc, transcript, modelIndicators }: Synce
               </React.Fragment>
             );
           })}
+          </div>
+          {showTranscriptScrollTop && (
+            <button
+              type="button"
+              aria-label="Len dau transcript"
+              onClick={() => transcriptScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+              className="absolute bottom-2 right-2 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-primary text-white shadow-md shadow-primary/30 ring-2 ring-white/40 transition hover:scale-105"
+            >
+              <ChevronUp className="h-5 w-5" strokeWidth={2.5} />
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -291,6 +312,8 @@ const Dashboard = () => {
   const [renderToast, setRenderToast] = useState<{ variant: 'success' | 'error' | 'info'; message: string } | null>(null);
   const renderCompletionToastShownRef = useRef(false);
   const transcriptPanelRef = useRef<HTMLElement | null>(null);
+  const liveTranscriptScrollRef = useRef<HTMLDivElement>(null);
+  const [showLiveTranscriptGoTop, setShowLiveTranscriptGoTop] = useState(false);
   const recordingResultCardRef = useRef<HTMLDivElement | null>(null);
   const recordingSourceRef = useRef(recordingSource);
   const fullTranscriptRef = useRef<TranscriptItem[]>(fullTranscript);
@@ -1326,7 +1349,7 @@ const Dashboard = () => {
       </section>
 
       <section ref={transcriptPanelRef} className="w-full max-w-6xl scroll-mt-28">
-        <div className="min-h-[400px] rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-10 shadow-[0_20px_40px_-10px_rgba(19,27,46,0.04)]">
+        <div className="min-h-[600px] rounded-2xl border border-outline-variant/10 bg-surface-container-lowest p-10 shadow-[0_20px_40px_-10px_rgba(19,27,46,0.04)]">
           <div className="mb-8 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <span className={cn("w-2 h-2 rounded-full", isRecording ? "bg-error animate-pulse" : "bg-tertiary")}></span>
@@ -1351,52 +1374,71 @@ const Dashboard = () => {
 
           <div className="space-y-6 leading-relaxed">
             {recordingSource === 'live' && fullTranscript.length > 0 && !transcriptError ? (
-               <div className="space-y-6">
-                {fullTranscript.map((item, idx) => (
-                  <React.Fragment key={idx}>
-                    {/* Model indicator badge - UI only */}
-                    {modelIndicators.has(idx) && (
-                      <div className="flex items-center gap-2 py-2">
-                        <div className="flex-1 h-px bg-outline-variant/15"></div>
-                        <span className={cn(
-                          "text-[9px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider flex items-center gap-1.5 border",
-                          modelIndicators.get(idx) === 'gemini' ? "bg-primary/5 text-primary border-primary/20" :
-                          modelIndicators.get(idx) === 'groq' ? "bg-[#f55036]/5 text-[#f55036] border-[#f55036]/20" :
-                          modelIndicators.get(idx) === 'openai' ? "bg-[#10a37f]/5 text-[#10a37f] border-[#10a37f]/20" :
-                          modelIndicators.get(idx) === 'claude' ? "bg-[#d97706]/5 text-[#d97706] border-[#d97706]/20" :
-                          "bg-surface-container text-on-surface-variant border-outline-variant/20"
-                        )}>
-                          <span className="w-1.5 h-1.5 rounded-full bg-current"></span>
-                          {modelIndicators.get(idx)}
-                        </span>
-                        <div className="flex-1 h-px bg-outline-variant/15"></div>
-                      </div>
-                    )}
-                    <div className="flex flex-col gap-1.5 group">
-                      <div className="flex items-center gap-3">
-                        <div className={cn(
-                          "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
-                          item.gender === 'Nam' ? "bg-blue-100 text-blue-700" :
-                            item.gender === 'Nữ' ? "bg-pink-100 text-pink-700" : "bg-surface-container-highest text-on-surface-variant"
-                        )}>
-                          {item.speaker} {item.gender ? `• ${item.gender}` : ""}
-                        </div>
-                        <span className="text-[10px] font-mono text-on-surface-variant opacity-40">{item.timestamp}</span>
-                      </div>
-                      <p className={cn(
-                        "text-lg font-body transition-colors",
-                        item.isUncertain ? "text-error font-medium italic opacity-80" : "text-on-surface text-on-surface-variant"
-                      )}>
-                        {item.text}
-                        {item.isUncertain && (
-                          <span className="ml-2 inline-flex items-center gap-1 text-[9px] bg-error/10 text-error px-1.5 py-0.5 rounded border border-error/20 not-italic font-bold uppercase tracking-tighter">
-                            AI không chắc chắn
+              <div className="relative">
+                <div
+                  ref={liveTranscriptScrollRef}
+                  onScroll={() => {
+                    const el = liveTranscriptScrollRef.current;
+                    setShowLiveTranscriptGoTop(!!el && el.scrollTop > 100);
+                  }}
+                  className="max-h-[900px] space-y-6 overflow-y-auto pr-2"
+                >
+                  {fullTranscript.map((item, idx) => (
+                    <React.Fragment key={idx}>
+                      {/* Model indicator badge - UI only */}
+                      {modelIndicators.has(idx) && (
+                        <div className="flex items-center gap-2 py-2">
+                          <div className="h-px flex-1 bg-outline-variant/15"></div>
+                          <span className={cn(
+                            "text-[9px] px-2.5 py-1 rounded-full font-bold uppercase tracking-wider flex items-center gap-1.5 border",
+                            modelIndicators.get(idx) === 'gemini' ? "bg-primary/5 text-primary border-primary/20" :
+                            modelIndicators.get(idx) === 'groq' ? "bg-[#f55036]/5 text-[#f55036] border-[#f55036]/20" :
+                            modelIndicators.get(idx) === 'openai' ? "bg-[#10a37f]/5 text-[#10a37f] border-[#10a37f]/20" :
+                            modelIndicators.get(idx) === 'claude' ? "bg-[#d97706]/5 text-[#d97706] border-[#d97706]/20" :
+                            "bg-surface-container text-on-surface-variant border-outline-variant/20"
+                          )}>
+                            <span className="h-1.5 w-1.5 rounded-full bg-current"></span>
+                            {modelIndicators.get(idx)}
                           </span>
-                        )}
-                      </p>
-                    </div>
-                  </React.Fragment>
-                ))}
+                          <div className="h-px flex-1 bg-outline-variant/15"></div>
+                        </div>
+                      )}
+                      <div className="group flex flex-col gap-1.5">
+                        <div className="flex items-center gap-3">
+                          <div className={cn(
+                            "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
+                            item.gender === 'Nam' ? "bg-blue-100 text-blue-700" :
+                              item.gender === 'Nữ' ? "bg-pink-100 text-pink-700" : "bg-surface-container-highest text-on-surface-variant"
+                          )}>
+                            {item.speaker} {item.gender ? `• ${item.gender}` : ""}
+                          </div>
+                          <span className="text-[10px] font-mono text-on-surface-variant opacity-40">{item.timestamp}</span>
+                        </div>
+                        <p className={cn(
+                          "text-lg font-body transition-colors",
+                          item.isUncertain ? "text-error font-medium italic opacity-80" : "text-on-surface text-on-surface-variant"
+                        )}>
+                          {item.text}
+                          {item.isUncertain && (
+                            <span className="ml-2 inline-flex items-center gap-1 text-[9px] bg-error/10 text-error px-1.5 py-0.5 rounded border border-error/20 not-italic font-bold uppercase tracking-tighter">
+                              AI không chắc chắn
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                    </React.Fragment>
+                  ))}
+                </div>
+                {showLiveTranscriptGoTop && (
+                  <button
+                    type="button"
+                    aria-label="Len dau transcript"
+                    onClick={() => liveTranscriptScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+                    className="absolute bottom-2 right-2 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-primary text-white shadow-md shadow-primary/30 ring-2 ring-white/40 transition hover:scale-105"
+                  >
+                    <ChevronUp className="h-5 w-5" strokeWidth={2.5} />
+                  </button>
+                )}
               </div>
             ) : transcriptError ? (
               <motion.div
@@ -1614,6 +1656,13 @@ const AdminDashboard = () => {
   const [renameError, setRenameError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  /** Admin recording detail: AI summary panel hidden by default on small screens */
+  const [showRecordingSummary, setShowRecordingSummary] = useState(false);
+  /** Collapsible left nav (1366px and similar) */
+  const [adminSidebarOpen, setAdminSidebarOpen] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    return window.localStorage.getItem('sonic_lens_admin_nav_open') !== 'false';
+  });
 
   // AI provider config state
   const [aiProvider, setAIProvider] = useState<AIProvider>(() => getAIConfig().provider);
@@ -1690,6 +1739,18 @@ const AdminDashboard = () => {
   useEffect(() => {
     fetchRecordings();
   }, []);
+
+  useEffect(() => {
+    setShowRecordingSummary(false);
+  }, [selectedRecording?.id]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('sonic_lens_admin_nav_open', String(adminSidebarOpen));
+    } catch {
+      /* ignore */
+    }
+  }, [adminSidebarOpen]);
 
   const fetchRecordings = async () => {
     if (!isSupabaseConfigured) {
@@ -1850,55 +1911,90 @@ const AdminDashboard = () => {
 
   return (
     <div className="flex min-w-0 flex-1 pt-16">
-      <aside className="h-screen w-64 fixed left-0 top-0 pt-20 bg-surface-container-low flex flex-col gap-2 p-4 border-r border-surface-container-low z-40">
-        <div className="mb-6 px-2">
-          <div className="flex items-center gap-3 mb-1">
-            <div className="w-10 h-10 rounded-full bg-primary-fixed flex items-center justify-center overflow-hidden">
-              <User className="w-6 h-6 text-primary" />
-            </div>
-            <div>
-              <h3 className="font-headline font-bold text-sm text-on-surface">Admin Panel</h3>
-              <p className="text-xs text-on-surface-variant">Quản lý hệ thống</p>
+      <aside
+        className={cn(
+          'fixed left-0 top-0 z-40 flex h-screen w-[11.2rem] flex-col gap-1 border-r border-surface-container-low bg-surface-container-low p-3 pt-20 shadow-sm transition-transform duration-300 ease-out',
+          adminSidebarOpen ? 'translate-x-0' : '-translate-x-full',
+        )}
+        aria-hidden={!adminSidebarOpen}
+      >
+        <div className="mb-3 flex items-start justify-between gap-1 px-1">
+          <div className="min-w-0 flex-1">
+            <div className="mb-1 flex items-center gap-2">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary-fixed">
+                <User className="h-5 w-5 text-primary" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="font-headline text-xs font-bold leading-tight text-on-surface">Admin</h3>
+                <p className="truncate text-[10px] text-on-surface-variant">Hệ thống</p>
+              </div>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={() => setAdminSidebarOpen(false)}
+            className="shrink-0 rounded-lg p-1.5 text-on-surface-variant transition-colors hover:bg-white/60 hover:text-on-surface"
+            title="Thu gọn menu"
+            aria-label="Thu gọn menu"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
         </div>
-        <nav className="flex-1 flex flex-col gap-1">
+        <nav className="flex flex-1 flex-col gap-1">
           <button
             onClick={() => setActiveTab('recordings')}
             className={cn(
-              "rounded-lg shadow-sm font-semibold flex items-center gap-3 px-4 py-3 transition-all duration-200",
+              "flex items-center gap-2 rounded-lg px-2.5 py-2.5 text-left font-semibold shadow-sm transition-all duration-200",
               activeTab === 'recordings' ? "bg-white text-primary" : "text-on-surface-variant hover:bg-white/50"
             )}
           >
-            <Mic className="w-5 h-5" />
-            <span className="font-body text-sm font-medium">Bản ghi âm</span>
+            <Mic className="h-4 w-4 shrink-0" />
+            <span className="font-body text-xs font-medium leading-snug">Bản ghi âm</span>
           </button>
           <button
             onClick={() => setActiveTab('api')}
             className={cn(
-              "rounded-lg shadow-sm font-semibold flex items-center gap-3 px-4 py-3 transition-all duration-200",
+              "flex items-center gap-2 rounded-lg px-2.5 py-2.5 text-left font-semibold shadow-sm transition-all duration-200",
               activeTab === 'api' ? "bg-white text-primary" : "text-on-surface-variant hover:bg-white/50"
             )}
           >
-            <Settings className="w-5 h-5" />
-            <span className="font-body text-sm font-medium">Cài đặt API</span>
+            <Settings className="h-4 w-4 shrink-0" />
+            <span className="font-body text-xs font-medium leading-snug">Cài đặt API</span>
           </button>
         </nav>
-        <div className="mt-auto border-t border-outline-variant/30 pt-4">
+        <div className="mt-auto border-t border-outline-variant/30 pt-3">
           <button
             onClick={() => {
               localStorage.removeItem("isAdminAuthenticated");
               window.location.reload();
             }}
-            className="text-on-surface-variant hover:bg-white/50 w-full rounded-lg flex items-center gap-3 px-4 py-3 transition-all duration-200"
+            className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2.5 text-on-surface-variant transition-all duration-200 hover:bg-white/50"
           >
-            <LogOut className="w-5 h-5" />
-            <span className="font-body text-sm font-medium">Đăng xuất</span>
+            <LogOut className="h-4 w-4 shrink-0" />
+            <span className="font-body text-xs font-medium">Đăng xuất</span>
           </button>
         </div>
       </aside>
 
-      <main className="flex-1 ml-64 min-w-0 px-[15px] py-8 bg-surface">
+      {!adminSidebarOpen && (
+        <button
+          type="button"
+          onClick={() => setAdminSidebarOpen(true)}
+          className="fixed left-0 top-24 z-40 flex h-11 w-9 items-center justify-center rounded-r-xl border border-l-0 border-outline-variant/20 bg-surface-container-low text-primary shadow-md transition hover:bg-white"
+          title="Mở menu"
+          aria-label="Mở menu Admin"
+        >
+          <ChevronRight className="h-5 w-5" />
+        </button>
+      )}
+
+      <main
+        className={cn(
+          'min-w-0 flex-1 bg-surface px-3 py-6 transition-[margin,padding] duration-300 ease-out sm:px-[15px] sm:py-8',
+          // Reserve horizontal space for the floating "open menu" control when nav is collapsed (fixed left-0 w-9).
+          adminSidebarOpen ? 'ml-[11.2rem]' : 'ml-0 pl-11 sm:pl-12',
+        )}
+      >
         <div className="w-full">
           {activeTab === 'recordings' ? (
             <>
@@ -1919,8 +2015,8 @@ const AdminDashboard = () => {
                 </div>
               </header>
 
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                <div className="lg:col-span-4 flex flex-col gap-4">
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:gap-6">
+                <div className="flex flex-col gap-3 lg:col-span-3">
                   {(() => {
                     const filteredRecordings = recordings.filter(r => r.title.toLowerCase().includes(searchQuery.toLowerCase()));
                     const isAllFilteredSelected = filteredRecordings.length > 0 && filteredRecordings.every(r => selectedIds.includes(r.id));
@@ -1970,8 +2066,8 @@ const AdminDashboard = () => {
                               <div
                                 key={rec.id}
                                 className={cn(
-                                  "p-4 rounded-lg shadow-sm cursor-pointer transition-all flex items-start gap-3",
-                                  selectedRecording?.id === rec.id ? "bg-white border-l-4 border-primary" : "hover:bg-surface-container-high"
+                                  "flex cursor-pointer items-start gap-2 rounded-lg p-3 shadow-sm transition-all sm:gap-3",
+                                  selectedRecording?.id === rec.id ? "border-l-4 border-primary bg-white" : "hover:bg-surface-container-high"
                                 )}
                               >
                                 <input
@@ -2018,10 +2114,10 @@ const AdminDashboard = () => {
                   })()}
                 </div>
 
-                <div className="lg:col-span-8">
+                <div className="min-w-0 lg:col-span-9">
                   {selectedRecording ? (
-                    <div className="flex flex-col xl:flex-row xl:items-start gap-6">
-                      <div className="min-w-0 flex-1 space-y-6">
+                    <div className="flex flex-col gap-6 xl:flex-row xl:items-start">
+                      <div className="min-w-0 flex-1 space-y-6 xl:min-w-0">
                         <div className="bg-surface-container-lowest rounded-xl p-6 shadow-sm border border-outline-variant/10">
                           <div className="flex items-center justify-between mb-8">
                             <div className="flex items-center gap-4">
@@ -2049,11 +2145,22 @@ const AdminDashboard = () => {
                                 </p>
                               </div>
                             </div>
-                            <div className="flex gap-2">
+                            <div className="flex flex-wrap items-center gap-1 sm:gap-2">
+                              {selectedRecording.summary?.trim() && !showRecordingSummary && (
+                                <button
+                                  type="button"
+                                  onClick={() => setShowRecordingSummary(true)}
+                                  className="flex items-center gap-1.5 rounded-lg border border-primary/25 bg-primary/10 px-2 py-2 text-xs font-bold uppercase tracking-wide text-primary transition-colors hover:bg-primary/15 sm:px-3"
+                                  title="Xem tóm tắt AI"
+                                >
+                                  <Sparkles className="h-4 w-4 shrink-0" />
+                                  <span className="hidden sm:inline">Tóm tắt AI</span>
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => exportToWord(selectedRecording.title, selectedRecording.transcript)}
-                                className="p-2 text-on-surface-variant hover:text-primary transition-colors"
+                                className="p-2 text-on-surface-variant transition-colors hover:text-primary"
                                 title="Xuất Word"
                               >
                                 <FileText className="w-5 h-5" />
@@ -2084,11 +2191,13 @@ const AdminDashboard = () => {
                               <audio controls src={selectedRecording.audio_url} className="w-full mb-6 cursor-pointer" />
                               <div className="space-y-6">
                                 {selectedRecording.transcript.map((item, idx) => (
-                                  <div key={idx} className="flex gap-4">
-                                    <div className="shrink-0">
-                                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-surface-container-highest text-on-surface-variant opacity-50">{item.timestamp}</span>
+                                  <div key={idx} className="flex gap-2.5 sm:gap-3">
+                                    <div className="w-10 shrink-0 pt-0.5">
+                                      <span className="block rounded bg-surface-container-highest px-1 py-0.5 text-center font-mono text-[9px] leading-tight text-on-surface-variant opacity-80">
+                                        {item.timestamp}
+                                      </span>
                                     </div>
-                                    <div className="flex-1">
+                                    <div className="min-w-0 flex-1">
                                       <div className="flex items-center gap-2 mb-1">
                                         <span className={cn(
                                           "px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
@@ -2113,12 +2222,23 @@ const AdminDashboard = () => {
                         </div>
                       </div>
 
-                      {selectedRecording.summary?.trim() ? (
-                        <aside className="flex w-full flex-col overflow-hidden rounded-xl border-2 border-primary/25 bg-gradient-to-b from-primary-fixed/20 to-surface-container-lowest/90 shadow-[0_12px_40px_-16px_rgba(79,70,229,0.35)] ring-1 ring-primary/10 xl:max-h-[calc(100vh-7rem)] xl:min-h-0 xl:w-[min(100%,24rem)] xl:shrink-0 xl:sticky xl:top-24 xl:self-start">
-                          <h4 className="shrink-0 border-b border-primary/25 bg-surface px-4 py-3 font-headline text-xs font-bold uppercase tracking-wider text-primary">
-                            Tóm tắt AI
-                          </h4>
-                          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
+                      {selectedRecording.summary?.trim() && showRecordingSummary ? (
+                        <aside className="flex w-full shrink-0 flex-col overflow-hidden rounded-xl border-2 border-primary/25 bg-gradient-to-b from-primary-fixed/20 to-surface-container-lowest/90 shadow-[0_12px_40px_-16px_rgba(79,70,229,0.35)] ring-1 ring-primary/10 xl:max-h-[calc(100vh-7rem)] xl:min-h-0 xl:w-[min(100%,17.5rem)] xl:sticky xl:top-24 xl:self-start">
+                          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-primary/25 bg-surface px-3 py-2.5 sm:px-4">
+                            <h4 className="font-headline text-xs font-bold uppercase tracking-wider text-primary">
+                              Tóm tắt AI
+                            </h4>
+                            <button
+                              type="button"
+                              onClick={() => setShowRecordingSummary(false)}
+                              className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-bold text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface"
+                              title="Ẩn tóm tắt"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                              Ẩn
+                            </button>
+                          </div>
+                          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3 sm:px-4">
                             <AiSummaryBlock text={selectedRecording.summary} />
                           </div>
                         </aside>
