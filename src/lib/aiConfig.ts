@@ -1,6 +1,7 @@
-// Manages AI provider selection and API keys stored in localStorage.
+// AI provider selection and API keys: localStorage + optional Supabase row for cross-device sync.
 // Gemini always uses process.env.GEMINI_API_KEY from the environment (unchanged).
-// Other provider keys are entered manually and stored here.
+
+import { isSupabaseConfigured, supabase } from './supabase';
 
 export type AIProvider = 'gemini' | 'nvidiaNim' | 'openai' | 'groq' | 'claude';
 
@@ -25,6 +26,12 @@ export interface AIConfig {
 
 const STORAGE_KEY = 'sonic_lens_ai_config';
 
+/** Supabase table: see supabase_ai_app_config.sql */
+export const AI_APP_CONFIG_TABLE = 'ai_app_config';
+export const AI_APP_CONFIG_ROW_ID = 'default';
+
+export const AI_CONFIG_SYNC_EVENT = 'sonic-lens-ai-config-loaded';
+
 const DEFAULT_CONFIG: AIConfig = {
   provider: 'gemini',
   enableMultiModel: false,
@@ -37,20 +44,41 @@ const DEFAULT_CONFIG: AIConfig = {
   disabledProviders: [],
 };
 
+const ALL_PROVIDERS: AIProvider[] = ['gemini', 'nvidiaNim', 'groq', 'openai', 'claude'];
+
+function normalizeDisabledProviders(raw: unknown): AIProvider[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((x): x is AIProvider => typeof x === 'string' && ALL_PROVIDERS.includes(x as AIProvider));
+}
+
+/** Merge plain object into a full AIConfig (used for localStorage + Supabase JSON). */
+export function configFromPlainObject(raw: Record<string, unknown>): AIConfig {
+  delete raw.zenApiKey;
+  delete raw.zenModelId;
+  const validProviders: AIProvider[] = ['gemini', 'nvidiaNim', 'groq', 'openai', 'claude'];
+  if (typeof raw.provider !== 'string' || !validProviders.includes(raw.provider as AIProvider)) {
+    raw.provider = 'gemini';
+  }
+  const merged = { ...DEFAULT_CONFIG, ...raw } as AIConfig;
+  merged.disabledProviders = normalizeDisabledProviders(merged.disabledProviders);
+  return merged;
+}
+
+/** Persist full config to localStorage only (no remote write). */
+export function saveAIConfigToLocalStorage(full: AIConfig): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(full));
+  } catch {
+    /* ignore quota */
+  }
+}
+
 export function getAIConfig(): AIConfig {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const parsed = JSON.parse(stored) as Record<string, unknown>;
-      delete parsed.zenApiKey;
-      delete parsed.zenModelId;
-      const validProviders: AIProvider[] = ['gemini', 'nvidiaNim', 'groq', 'openai', 'claude'];
-      if (typeof parsed.provider !== 'string' || !validProviders.includes(parsed.provider as AIProvider)) {
-        parsed.provider = 'gemini';
-      }
-      const merged = { ...DEFAULT_CONFIG, ...parsed } as AIConfig;
-      merged.disabledProviders = normalizeDisabledProviders(merged.disabledProviders);
-      return merged;
+      return configFromPlainObject(parsed);
     }
   } catch {
     // ignore parse errors, return defaults
@@ -58,16 +86,68 @@ export function getAIConfig(): AIConfig {
   return { ...DEFAULT_CONFIG };
 }
 
+/** Merge partial into current, save locally, then upsert to Supabase (best-effort). */
 export function saveAIConfig(config: Partial<AIConfig>): void {
   const current = getAIConfig();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...current, ...config }));
+  const next = { ...current, ...config } as AIConfig;
+  saveAIConfigToLocalStorage(next);
+  void upsertAIConfigRemote(next);
 }
 
-const ALL_PROVIDERS: AIProvider[] = ['gemini', 'nvidiaNim', 'groq', 'openai', 'claude'];
+/** Same as saveAIConfig but await remote; use from Admin to surface errors. */
+export async function saveAIConfigAndWaitRemote(config: Partial<AIConfig>): Promise<{ ok: boolean; error?: string }> {
+  const current = getAIConfig();
+  const next = { ...current, ...config } as AIConfig;
+  saveAIConfigToLocalStorage(next);
+  return upsertAIConfigRemote(next);
+}
 
-function normalizeDisabledProviders(raw: unknown): AIProvider[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((x): x is AIProvider => typeof x === 'string' && ALL_PROVIDERS.includes(x as AIProvider));
+async function upsertAIConfigRemote(full: AIConfig): Promise<{ ok: boolean; error?: string }> {
+  if (!isSupabaseConfigured) {
+    return { ok: true };
+  }
+  const { error } = await supabase.from(AI_APP_CONFIG_TABLE).upsert(
+    {
+      id: AI_APP_CONFIG_ROW_ID,
+      config: full as unknown as Record<string, unknown>,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'id' },
+  );
+  if (error) {
+    console.error('[aiConfig] Supabase upsert failed:', error);
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
+}
+
+/**
+ * Load shared config from Supabase into localStorage.
+ * Call once after app unlocks. Returns true if a remote row was applied.
+ */
+export async function syncAIConfigFromSupabase(): Promise<boolean> {
+  if (!isSupabaseConfigured) {
+    return false;
+  }
+  const { data, error } = await supabase
+    .from(AI_APP_CONFIG_TABLE)
+    .select('config')
+    .eq('id', AI_APP_CONFIG_ROW_ID)
+    .maybeSingle();
+
+  if (error) {
+    console.warn('[aiConfig] Supabase fetch failed:', error.message);
+    return false;
+  }
+
+  const blob = data?.config;
+  if (blob == null || typeof blob !== 'object' || Array.isArray(blob)) {
+    return false;
+  }
+
+  const next = configFromPlainObject(blob as Record<string, unknown>);
+  saveAIConfigToLocalStorage(next);
+  return true;
 }
 
 /** Ensure order contains every provider exactly once */
